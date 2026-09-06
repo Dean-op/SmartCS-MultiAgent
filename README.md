@@ -1,6 +1,6 @@
 # ecommerce-ai-agent
 
-面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M1：FastAPI API 层建设**。
+面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M2：PostgreSQL 业务数据层**。
 
 ## 当前能力
 
@@ -11,8 +11,11 @@
 - 命名卷持久化、自动化单元测试和运行态 smoke test
 - `/api/v1` 版本化 API、稳定 Schema 和统一错误响应
 - 不依赖 LLM 的 Mock Chat API
+- SQLAlchemy 2.x 异步数据访问、Alembic Migration 和幂等 Seed Data
+- User、Product、Order、OrderItem、Shipment、Refund、HumanReview 业务模型
+- 面向后续 Tool 的 Repository、Service 和只读 DTO 边界
 
-当前不包含 Agent、LLM、RAG、业务模型、JWT、Redis Session、Celery Worker、LangGraph、OpenTelemetry 或 Evaluation。
+当前不包含 Agent、LLM、RAG、JWT、Authorization、Redis Session、Celery Worker、LangGraph、OpenTelemetry 或 Evaluation。
 
 ## 环境要求
 
@@ -48,7 +51,7 @@ cp .env.example .env
 uv sync --frozen --all-groups
 ```
 
-运行质量检查和测试：
+完整 pytest 包含真实 PostgreSQL 集成测试，请先确保 Compose 中 PostgreSQL healthy。运行质量检查和测试：
 
 ```bash
 uv run ruff check .
@@ -61,7 +64,7 @@ uv run pytest
 uv run uvicorn ecommerce_ai_agent.main:create_app --factory --reload
 ```
 
-## 启动完整 M0 环境
+## 启动完整本地环境
 
 构建并后台启动：
 
@@ -145,6 +148,36 @@ curl -X POST http://localhost:8000/api/v1/chat \
 
 Swagger UI：<http://localhost:8000/docs>，OpenAPI Schema：<http://localhost:8000/openapi.json>。
 
+## PostgreSQL 业务数据
+
+业务 Schema 只通过 Alembic 管理，应用启动不会调用 `create_all`。升级到最新版本：
+
+```bash
+uv run alembic upgrade head
+uv run alembic current
+uv run alembic check
+```
+
+初始化或补齐可重复使用的开发数据：
+
+```bash
+uv run python scripts/seed_data.py
+```
+
+Seed 可重复运行且不会产生重复记录，当前包含：
+
+- 6 个用户，包括 5 个 customer 和 1 个 admin
+- 12 个商品
+- 24 个订单及订单项
+- 12 条物流、5 条退款、3 条人工审核记录
+- 待支付、处理中、运输中、已完成、已取消等业务场景
+
+业务金额在 PostgreSQL 中使用 `NUMERIC(12,2)`，在 Python 中使用 `Decimal`。状态使用 PostgreSQL Named Enum，不接受任意字符串。
+
+完整测试会安全地创建并删除独立的 `ecommerce_agent_test` 数据库。测试保护规则要求数据库名必须以 `_test` 结尾，不会清理开发数据库。
+
+M2 不增加用户、订单等公共 CRUD API。未来 API 或 Tool 应调用 `UserService`、`CatalogService`、`OrderService`、`RefundService`，不能直接访问 ORM。
+
 ## 停止与清理
 
 停止并删除容器和网络，但保留数据卷：
@@ -168,7 +201,11 @@ docker compose down -v
 ```bash
 uv lock --check
 uv sync --frozen --all-groups
+uv run ruff format --check .
 uv run ruff check .
+uv run alembic upgrade head
+uv run alembic check
+uv run python scripts/seed_data.py
 uv run pytest
 docker compose config --quiet
 docker compose build api
@@ -201,4 +238,4 @@ docker compose up -d --force-recreate
 
 ## 后续开发边界
 
-Agent、LangGraph、业务数据模型、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。M1 的 Chat Service 将作为后续 LangGraph Workflow 的替换边界。
+Agent、LangGraph、Tool Calling、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。M2 Service 是未来 Tool 访问业务数据的唯一入口，M1 Chat Service 仍是后续 LangGraph Workflow 的替换边界。
