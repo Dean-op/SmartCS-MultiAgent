@@ -9,14 +9,36 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+from uuid import UUID
 
 EXPECTED_DEPENDENCIES = {"postgres": "ok", "redis": "ok", "milvus": "ok"}
 
 
-def fetch_json(url: str, timeout: float = 5.0) -> tuple[int, dict[str, Any]]:
+def fetch_json(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout: float = 5.0,
+) -> tuple[int, dict[str, Any]]:
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(  # noqa: S310 - smoke test targets configured local API
+        url,
+        data=body,
+        headers={"content-type": "application/json"} if body is not None else {},
+        method=method,
+    )
+    try:
+        response = urllib.request.urlopen(request, timeout=timeout)  # noqa: S310
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+    with response:
+        return response.status, json.loads(response.read().decode("utf-8"))
+
+
+def fetch_text(url: str, timeout: float = 5.0) -> tuple[int, str]:
     with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - local URL
-        payload = json.loads(response.read().decode("utf-8"))
-        return response.status, payload
+        return response.status, response.read().decode("utf-8")
 
 
 def run_smoke_test(base_url: str, wait_seconds: float) -> None:
@@ -35,7 +57,34 @@ def run_smoke_test(base_url: str, wait_seconds: float) -> None:
                 raise RuntimeError(f"unexpected readiness response: {ready_payload}")
             if ready_payload.get("dependencies") != EXPECTED_DEPENDENCIES:
                 raise RuntimeError(f"unexpected dependency status: {ready_payload}")
-            print("M0 smoke test passed: API, PostgreSQL, Redis, and Milvus are ready.")
+
+            docs_status, docs_body = fetch_text(f"{base_url}/docs")
+            if docs_status != 200 or "Swagger UI" not in docs_body:
+                raise RuntimeError(f"Swagger UI is unavailable: {docs_status}")
+
+            chat_status, chat_payload = fetch_json(
+                f"{base_url}/api/v1/chat",
+                method="POST",
+                payload={"message": "M1 smoke test"},
+            )
+            if chat_status != 200 or chat_payload.get("status") != "completed":
+                raise RuntimeError(f"unexpected chat response: {chat_status} {chat_payload}")
+            if chat_payload.get("mode") != "mock":
+                raise RuntimeError(f"unexpected chat mode: {chat_payload}")
+            UUID(chat_payload["conversation_id"])
+            UUID(chat_payload["message"]["id"])
+
+            invalid_status, invalid_payload = fetch_json(
+                f"{base_url}/api/v1/chat",
+                method="POST",
+                payload={"message": "   "},
+            )
+            if invalid_status != 422:
+                raise RuntimeError(f"invalid chat input was accepted: {invalid_status}")
+            if invalid_payload.get("error", {}).get("code") != "validation_error":
+                raise RuntimeError(f"unexpected validation error: {invalid_payload}")
+
+            print("M1 smoke test passed: M0 dependencies, Swagger, Chat, and validation are ready.")
             return
         except (OSError, ValueError, RuntimeError, urllib.error.HTTPError) as exc:
             last_error = f"{type(exc).__name__}: {exc}"

@@ -1,6 +1,6 @@
 # ecommerce-ai-agent
 
-面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前完成范围仅为 **M0：工程骨架与本地开发基础设施**。
+面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M1：FastAPI API 层建设**。
 
 ## 当前能力
 
@@ -9,8 +9,10 @@
 - API liveness 与依赖 readiness 健康检查
 - PostgreSQL、Redis、Milvus Standalone、etcd、MinIO 本地容器环境
 - 命名卷持久化、自动化单元测试和运行态 smoke test
+- `/api/v1` 版本化 API、稳定 Schema 和统一错误响应
+- 不依赖 LLM 的 Mock Chat API
 
-M0 不包含 Agent、LLM、RAG、业务模型、JWT、Celery Worker、LangGraph、OpenTelemetry 或 Evaluation。
+当前不包含 Agent、LLM、RAG、业务模型、JWT、Redis Session、Celery Worker、LangGraph、OpenTelemetry 或 Evaluation。
 
 ## 环境要求
 
@@ -105,6 +107,44 @@ uv run python scripts/smoke_test.py
 
 readiness 会实际连接 PostgreSQL、执行 Redis `PING`，并调用 Milvus 管理健康端点。它不会创建业务表、LangGraph Checkpoint 或 Milvus Collection。
 
+## Chat API
+
+发送一条消息：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"我的订单什么时候到？"}'
+```
+
+请求字段：
+
+- `message`：必填字符串，去除首尾空白后长度为 1～4000。
+- `conversation_id`：可选 UUID，只作为会话关联标识，不代表可信用户身份。
+- 不允许额外字段；身份认证将在后续里程碑实现。
+
+当前返回 Mock assistant message，不调用模型或外部服务。客户端可在下一次请求中回传 `conversation_id`，但 M1 不保存会话状态。
+
+所有 API 错误统一为：
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "message": "Request validation failed",
+    "details": [
+      {
+        "field": "body.message",
+        "message": "String should have at least 1 character",
+        "type": "string_too_short"
+      }
+    ]
+  }
+}
+```
+
+Swagger UI：<http://localhost:8000/docs>，OpenAPI Schema：<http://localhost:8000/openapi.json>。
+
 ## 停止与清理
 
 停止并删除容器和网络，但保留数据卷：
@@ -161,4 +201,4 @@ docker compose up -d --force-recreate
 
 ## 后续开发边界
 
-Agent、LangGraph、业务数据模型、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。不要在 M0 中创建占位业务模块或空基础设施。
+Agent、LangGraph、业务数据模型、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。M1 的 Chat Service 将作为后续 LangGraph Workflow 的替换边界。

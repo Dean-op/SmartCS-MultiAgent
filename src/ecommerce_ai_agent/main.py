@@ -3,6 +3,8 @@ import logging
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
 
+from ecommerce_ai_agent.api.errors import register_exception_handlers
+from ecommerce_ai_agent.api.v1.router import router as api_v1_router
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.health import HealthChecker, build_health_checker
 from ecommerce_ai_agent.logging import configure_logging
@@ -22,7 +24,19 @@ def create_app(
         "Application configured",
         extra={"environment": settings.app_env},
     )
-    application = FastAPI(title=settings.app_name)
+    application = FastAPI(
+        title=settings.app_name,
+        version="0.1.0",
+        description="M1 HTTP API foundation for the e-commerce AI Agent system.",
+        docs_url="/docs",
+        openapi_url="/openapi.json",
+        openapi_tags=[
+            {"name": "health", "description": "Application and dependency health"},
+            {"name": "chat", "description": "Versioned chat API"},
+        ],
+    )
+    register_exception_handlers(application)
+    application.include_router(api_v1_router)
 
     @application.get("/health/live", tags=["health"])
     async def liveness() -> dict[str, str]:
