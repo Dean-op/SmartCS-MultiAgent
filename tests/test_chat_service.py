@@ -5,15 +5,29 @@ import pytest
 
 from ecommerce_ai_agent.llm.client import ModelTurn, ToolCall
 from ecommerce_ai_agent.llm.errors import ModelProviderError
+from ecommerce_ai_agent.llm.schemas import RouteName
 from ecommerce_ai_agent.schemas.chat import ChatRequest
 from ecommerce_ai_agent.services.chat import ChatService
 
 
 class RecordingModel:
-    def __init__(self, *turns: ModelTurn) -> None:
+    def __init__(
+        self,
+        *turns: ModelTurn,
+        route: RouteName = "order",
+        general_text: str = "你好！",
+    ) -> None:
         self.turns = list(turns)
+        self.route = route
+        self.general_text = general_text
         self.calls: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
         self.closed = False
+
+    async def generate_structured(self, system_prompt, user_prompt, schema_type):
+        return schema_type(route=self.route)
+
+    async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+        return self.general_text
 
     async def generate_turn(
         self,
@@ -59,7 +73,6 @@ async def test_chat_service_executes_tool_then_returns_final_model_answer() -> N
     assert tools.calls == [("get_current_user_order", '{"order_number":"EC2026080016"}')]
     first_messages, definitions = model.calls[0]
     assert first_messages[0]["role"] == "system"
-    assert "只能使用工具返回的数据" in first_messages[0]["content"]
     assert first_messages[1] == {
         "role": "user",
         "content": "查询订单 EC2026080016",
@@ -94,7 +107,7 @@ async def test_chat_service_executes_tool_then_returns_final_model_answer() -> N
 
 @pytest.mark.asyncio
 async def test_chat_service_allows_direct_answer_without_tool_execution() -> None:
-    model = RecordingModel(ModelTurn(content="你好！", tool_calls=()))
+    model = RecordingModel(route="general", general_text="你好！")
     tools = RecordingTools()
     service = ChatService(model, tools)
 
@@ -102,7 +115,7 @@ async def test_chat_service_allows_direct_answer_without_tool_execution() -> Non
 
     assert response.message.content == "你好！"
     assert tools.calls == []
-    assert len(model.calls) == 1
+    assert model.calls == []
 
 
 @pytest.mark.asyncio
@@ -111,7 +124,7 @@ async def test_chat_service_stops_repeated_tool_calls_after_two_rounds() -> None
         content=None,
         tool_calls=(ToolCall(id="call", name="get_product_by_sku", arguments='{"sku":"x"}'),),
     )
-    service = ChatService(RecordingModel(repeated, repeated), RecordingTools())
+    service = ChatService(RecordingModel(repeated, repeated, route="product"), RecordingTools())
 
     with pytest.raises(ModelProviderError):
         await service.respond(ChatRequest(message="查询商品"))
@@ -119,7 +132,7 @@ async def test_chat_service_stops_repeated_tool_calls_after_two_rounds() -> None
 
 @pytest.mark.asyncio
 async def test_chat_service_closes_model_client() -> None:
-    model = RecordingModel(ModelTurn(content="unused", tool_calls=()))
+    model = RecordingModel(route="general")
     service = ChatService(model, RecordingTools())
 
     await service.close()

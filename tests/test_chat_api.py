@@ -20,6 +20,12 @@ async def healthy_probe() -> None:
 
 
 class FakeModel:
+    async def generate_structured(self, system_prompt, user_prompt, schema_type):
+        return schema_type(route="general")
+
+    async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+        return "来自 Fake Model 的回复"
+
     async def generate_turn(self, messages, tools) -> ModelTurn:
         return ModelTurn(content="来自 Fake Model 的回复", tool_calls=())
 

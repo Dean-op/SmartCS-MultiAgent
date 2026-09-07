@@ -103,6 +103,9 @@ async def test_unexpected_error_returns_generic_response_without_internal_detail
 @pytest.mark.asyncio
 async def test_model_error_uses_existing_error_contract() -> None:
     class TimeoutModel:
+        async def generate_structured(self, system_prompt, user_prompt, schema_type):
+            raise ModelTimeoutError
+
         async def generate_turn(self, messages, tools) -> ModelTurn:
             raise ModelTimeoutError
 
