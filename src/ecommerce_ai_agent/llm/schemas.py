@@ -1,8 +1,9 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-RouteName = Literal["order", "refund", "product", "general"]
+SpecialistRoute = Literal["order", "refund", "product"]
+RouteName = Literal["order", "refund", "product", "general", "complex"]
 
 
 class MessageAssessment(BaseModel):
@@ -17,3 +18,18 @@ class RouteDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route: RouteName
+
+
+class SupervisorPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    steps: tuple[SpecialistRoute, ...] = Field(min_length=2, max_length=3)
+
+    @field_validator("steps")
+    @classmethod
+    def steps_must_be_unique(
+        cls, steps: tuple[SpecialistRoute, ...]
+    ) -> tuple[SpecialistRoute, ...]:
+        if len(set(steps)) != len(steps):
+            raise ValueError("plan steps must be unique")
+        return steps

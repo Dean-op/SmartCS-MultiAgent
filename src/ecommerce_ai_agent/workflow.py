@@ -6,12 +6,26 @@ from langgraph.graph import END, START, StateGraph
 from ecommerce_ai_agent.business_tools import TOOL_DEFINITIONS, BusinessTools
 from ecommerce_ai_agent.llm.client import BailianModel, ModelTurn
 from ecommerce_ai_agent.llm.errors import ModelProviderError
-from ecommerce_ai_agent.llm.schemas import RouteDecision, RouteName
+from ecommerce_ai_agent.llm.schemas import (
+    RouteDecision,
+    RouteName,
+    SpecialistRoute,
+    SupervisorPlan,
+)
 
 ROUTER_PROMPT = """将用户消息分类为且仅分类为一个 route：
 order：订单状态、订单商品或物流；refund：退款记录或退款进度；
-product：商品、SKU、价格或商品信息；general：问候或不需要业务数据的问题。
-复杂请求只选择当前最主要的一个意图。不要回答用户问题。"""
+product：商品、SKU、价格或商品信息；general：问候或不需要业务数据的问题；
+complex：必须由两个或更多 Specialist 顺序协作才能完成的问题。
+简单请求不能选择 complex。不要回答用户问题。"""
+
+SUPERVISOR_PLAN_PROMPT = """为复杂请求生成最小顺序执行计划。
+steps 只能包含 order、refund、product，至少两个且不能重复。
+存在依赖时把提供信息的 Specialist 放在前面，例如先查订单再查关联退款。
+不要回答用户问题，也不要调用任何工具。"""
+
+SUPERVISOR_FINAL_PROMPT = """你是客服协调员。根据各 Specialist 的已验证结果，
+简洁汇总回答原始问题。不要补充结果中不存在的事实，不要声称执行写操作。"""
 
 CUSTOMER_SERVICE_SYSTEM_PROMPT = """你是一名简洁、诚实的电商客服。
 回答普通问题，但不要声称查询或修改了真实业务数据。"""
@@ -20,7 +34,8 @@ ORDER_AGENT_PROMPT = """你是订单查询客服，只处理当前用户的订�
 需要真实数据时只使用订单查询工具，只能根据工具结果回答，不得编造或执行写操作。"""
 
 REFUND_AGENT_PROMPT = """你是退款查询客服，只处理当前用户已有退款记录和进度问题。
-需要真实数据时只使用退款查询工具，只能根据工具结果回答，不得创建或修改退款。"""
+只要用户消息或前序结果中有退款单号，就必须使用退款查询工具确认最新状态。
+只能根据工具结果回答，不得创建或修改退款。"""
 
 PRODUCT_AGENT_PROMPT = """你是商品查询客服，只处理 SKU、商品信息和价格问题。
 需要真实数据时只使用商品查询工具，只能根据工具结果回答，不得编造商品信息。"""
@@ -33,6 +48,10 @@ REFUND_TOOLS = [TOOL_DEFINITIONS[2]]
 class ChatState(TypedDict):
     messages: Annotated[list[dict[str, Any]], add]
     route: NotRequired[RouteName]
+    plan: NotRequired[tuple[SpecialistRoute, ...]]
+    current_step: NotRequired[int]
+    agent_results: NotRequired[dict[SpecialistRoute, str]]
+    tool_used: NotRequired[bool]
 
 
 def _user_message(state: ChatState) -> str:
@@ -51,7 +70,7 @@ def _agent_messages(state: ChatState, prompt: str) -> list[dict[str, Any]]:
 
 
 def _assistant_message(state: ChatState, turn: ModelTurn) -> dict[str, Any]:
-    if turn.tool_calls and any(message.get("role") == "tool" for message in state["messages"]):
+    if turn.tool_calls and state.get("tool_used", False):
         raise ModelProviderError
     return {
         "role": "assistant",
@@ -65,6 +84,15 @@ def _assistant_message(state: ChatState, turn: ModelTurn) -> dict[str, Any]:
             for call in turn.tool_calls
         ],
     }
+
+
+def _active_specialist(state: ChatState) -> SpecialistRoute:
+    route = state["route"]
+    if route == "complex":
+        return state["plan"][state["current_step"]]
+    if route in ("order", "refund", "product"):
+        return route
+    raise ModelProviderError
 
 
 def build_chat_workflow(model: BailianModel, tools: BusinessTools):
@@ -82,6 +110,19 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
             _user_message(state),
         )
         return {"messages": [{"role": "assistant", "content": content}]}
+
+    async def supervisor(state: ChatState) -> ChatState:
+        plan = await model.generate_structured(
+            SUPERVISOR_PLAN_PROMPT,
+            _user_message(state),
+            SupervisorPlan,
+        )
+        return {
+            "plan": plan.steps,
+            "current_step": 0,
+            "agent_results": {},
+            "tool_used": False,
+        }
 
     async def order_agent(state: ChatState) -> ChatState:
         turn = await model.generate_turn(
@@ -105,7 +146,7 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
         return {"messages": [_assistant_message(state, turn)]}
 
     async def tool_node(state: ChatState) -> ChatState:
-        match state["route"]:
+        match _active_specialist(state):
             case "order":
                 allowed_tool = "get_current_user_order"
             case "refund":
@@ -129,19 +170,46 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
                     ),
                 }
                 for call in calls
-            ]
+            ],
+            "tool_used": True,
         }
+
+    async def supervisor_step(state: ChatState) -> ChatState:
+        content = state["messages"][-1].get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ModelProviderError
+        results = dict(state["agent_results"])
+        results[_active_specialist(state)] = content.strip()
+        return {
+            "current_step": state["current_step"] + 1,
+            "agent_results": results,
+            "tool_used": False,
+        }
+
+    async def supervisor_final(state: ChatState) -> ChatState:
+        results = "\n".join(
+            f"{agent}: {result}" for agent, result in state["agent_results"].items()
+        )
+        content = await model.generate_text(
+            SUPERVISOR_FINAL_PROMPT,
+            f"原始请求：{_user_message(state)}\nSpecialist 结果：\n{results}",
+        )
+        return {"messages": [{"role": "assistant", "content": content}]}
 
     def route_after_router(state: ChatState) -> RouteName:
         return state["route"]
 
-    def route_after_agent(state: ChatState) -> Literal["tools", "__end__"]:
-        return "tools" if state["messages"][-1].get("tool_calls") else END
+    def route_after_agent(
+        state: ChatState,
+    ) -> Literal["tools", "supervisor_step", "__end__"]:
+        if state["messages"][-1].get("tool_calls"):
+            return "tools"
+        return "supervisor_step" if state["route"] == "complex" else END
 
-    def route_after_tools(
+    def route_to_active_specialist(
         state: ChatState,
     ) -> Literal["order_agent", "refund_agent", "product_agent"]:
-        match state["route"]:
+        match _active_specialist(state):
             case "order":
                 return "order_agent"
             case "refund":
@@ -151,12 +219,22 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
             case _:
                 raise ModelProviderError
 
+    def route_after_step(
+        state: ChatState,
+    ) -> Literal["order_agent", "refund_agent", "product_agent", "supervisor_final"]:
+        if state["current_step"] == len(state["plan"]):
+            return "supervisor_final"
+        return route_to_active_specialist(state)
+
     builder = StateGraph(ChatState)
     builder.add_node("router", router)
     builder.add_node("order_agent", order_agent)
     builder.add_node("refund_agent", refund_agent)
     builder.add_node("product_agent", product_agent)
     builder.add_node("general_agent", general_agent)
+    builder.add_node("supervisor", supervisor)
+    builder.add_node("supervisor_step", supervisor_step)
+    builder.add_node("supervisor_final", supervisor_final)
     builder.add_node("tools", tool_node)
     builder.add_edge(START, "router")
     builder.add_conditional_edges(
@@ -167,10 +245,14 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
             "refund": "refund_agent",
             "product": "product_agent",
             "general": "general_agent",
+            "complex": "supervisor",
         },
     )
     for agent in ("order_agent", "refund_agent", "product_agent"):
         builder.add_conditional_edges(agent, route_after_agent)
     builder.add_edge("general_agent", END)
-    builder.add_conditional_edges("tools", route_after_tools)
+    builder.add_conditional_edges("supervisor", route_to_active_specialist)
+    builder.add_conditional_edges("tools", route_to_active_specialist)
+    builder.add_conditional_edges("supervisor_step", route_after_step)
+    builder.add_edge("supervisor_final", END)
     return builder.compile()

@@ -1,6 +1,6 @@
 # ecommerce-ai-agent
 
-面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M6：Router + Specialist Agents**。
+面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M7：Supervisor 与跨 Agent 协作**。
 
 ## 当前能力
 
@@ -14,11 +14,12 @@
 - JSON Object + Pydantic Structured Output
 - 订单、商品、退款三个只读 Tool 与最小 Tool Calling 循环
 - Structured Router、三个 Specialist 节点与隔离的 Tool 访问
+- Structured Supervisor Plan 与 Specialist 顺序协作、结果汇总
 - SQLAlchemy 2.x 异步数据访问、Alembic Migration 和幂等 Seed Data
 - User、Product、Order、OrderItem、Shipment、Refund、HumanReview 业务模型
 - 面向后续 Tool 的 Repository、Service 和只读 DTO 边界
 
-当前不包含 Supervisor、Agent 协作、RAG、JWT、正式 Authorization、Redis Session、Celery Worker、Checkpointer、OpenTelemetry 或 Evaluation。
+当前不包含并行执行、Replanning、RAG、JWT、正式 Authorization、Redis Session、Celery Worker、Checkpointer、OpenTelemetry 或 Evaluation。
 
 ## 环境要求
 
@@ -144,22 +145,25 @@ curl -X POST http://localhost:8000/api/v1/chat \
 - `conversation_id`：可选 UUID，只作为会话关联标识，不代表可信用户身份。
 - 不允许额外字段；身份认证将在后续里程碑实现。
 
-当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。客户端可在下一次请求中回传 `conversation_id`，但 M6 仍不保存会话状态。
+当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。客户端可在下一次请求中回传 `conversation_id`，但 M7 仍不保存会话状态。
 
-模型可调用三个只读 Tool：按订单号查询当前用户订单、按 SKU 查询商品、按退款单号查询当前用户退款。Tool 只调用 M2 Service；订单与退款会使用服务端 `DEVELOPMENT_USER_EMAIL` 对应的可信开发身份进行 ownership 限定。客户端和模型都不能提供可信 `user_id`。M6 仍不能修改订单或创建退款。
+模型可调用三个只读 Tool：按订单号查询当前用户订单、按 SKU 查询商品、按退款单号查询当前用户退款。Tool 只调用 M2 Service；订单与退款会使用服务端 `DEVELOPMENT_USER_EMAIL` 对应的可信开发身份进行 ownership 限定。客户端和模型都不能提供可信 `user_id`。M7 仍不能修改订单或创建退款。
 
 ## LangGraph Workflow
 
-M6 在 M5 `StateGraph` 上增加 Structured Router 和三个 Specialist：
+M7 在简单 Route 保持不变的基础上增加 complex 与 Supervisor：
 
 ```text
 START → router ─┬→ order_agent   → tools → order_agent   → END
                 ├→ refund_agent  → tools → refund_agent  → END
                 ├→ product_agent → tools → product_agent → END
-                └→ general_agent                           → END
+                ├→ general_agent                           → END
+                └→ complex → supervisor → specialist → tools → specialist
+                             → supervisor_step → 下一个 specialist
+                             → supervisor_final → END
 ```
 
-State 只包含追加式 `messages` 和 Router 产生的 `route`。每个 Specialist 只获得自己的单个 Tool Schema，Tool 节点还会在执行前再次校验 route 与 Tool 名称。Workflow 没有 Supervisor、协作、Checkpointer、Memory、Subgraph 或持久化。
+Supervisor 使用 Structured Output 生成由 order/refund/product 组成的 2～3 步顺序计划，不持有业务 Tool。State 在 `messages` 和 `route` 外只保存 `plan`、`current_step`、`agent_results` 与单步 Tool 标记。Workflow 没有并行、Replanning、Checkpointer、Memory 或持久化。
 
 所有 API 错误统一为：
 
@@ -191,13 +195,13 @@ uv run python scripts/llm_smoke_test.py
 
 该脚本依次验证普通文本生成和 `MessageAssessment` Structured Output。结构化输出使用 JSON Object 模式，提示词给出 JSON Schema，再由 Pydantic 校验为 typed result。脚本只输出模型名、字符数量、类型和耗时，不打印 Key、Endpoint、Prompt 或完整回复。真实调用会消耗额度。
 
-显式验证真实 Router 与 Specialist Tool Calling（会调用百炼并读取本地 PostgreSQL Seed）：
+显式验证真实 Supervisor 协作（会调用百炼并读取本地 PostgreSQL Seed）：
 
 ```bash
 uv run python scripts/tool_calling_smoke_test.py
 ```
 
-该脚本验证 order、refund、product、general 四类 Route 和跨用户 ownership，并检查实际 Specialist 路径、隔离后的 Tool、参数、真实 Tool Result 和最终回答。输出不包含 Key、Endpoint 或完整业务回答。
+该脚本只验证一个简单订单 Route 和一个复杂订单+退款请求，检查 Supervisor Plan、顺序路径、隔离后的 Tool、参数、真实 Tool Result 和最终汇总。输出不包含 Key、Endpoint 或完整业务回答。
 
 Provider 错误复用现有 API Error Contract，区分未配置、鉴权失败、限流/额度、timeout、连接失败、Structured Output 无效和其他 Provider 错误。客户端不会收到 SDK traceback、Key、Authorization Header 或 Provider 原始错误正文。
 
@@ -302,4 +306,4 @@ docker compose up -d --force-recreate
 
 ## 后续开发边界
 
-Supervisor、跨 Agent 协作、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。后续编排可直接复用当前 Route Schema、Router、三个 Specialist、Tool Isolation、`BusinessTools.run` 和 M2 Service。
+并行执行、Replanning、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。后续编排可直接复用当前 Router、Supervisor Plan、顺序推进、Agent Result 汇总、三个 Specialist 和 Tool Isolation。
