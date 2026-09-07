@@ -10,9 +10,8 @@ from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.database import create_database
 from ecommerce_ai_agent.llm.client import BailianModel
 from ecommerce_ai_agent.llm.errors import ModelError
-from ecommerce_ai_agent.schemas.chat import ChatRequest
 from ecommerce_ai_agent.seed import seed_database
-from ecommerce_ai_agent.services.chat import ChatService
+from ecommerce_ai_agent.workflow import CUSTOMER_SERVICE_SYSTEM_PROMPT, build_chat_workflow
 
 
 @dataclass(frozen=True)
@@ -71,13 +70,13 @@ SCENARIOS = (
 async def run() -> int:
     settings = Settings()
     if settings.llm_model != "qwen3.8-27b":
-        print("LLM_MODEL must be qwen3.8-27b for the M4 smoke test.", file=sys.stderr)
+        print("LLM_MODEL must be qwen3.8-27b for the M5 smoke test.", file=sys.stderr)
         return 1
 
     database = create_database(settings)
     model = BailianModel(settings)
     tools = RecordingBusinessTools(database.session_factory, settings.development_user_email)
-    service = ChatService(model, tools)
+    workflow = build_chat_workflow(model, tools)
     passed: list[str] = []
     try:
         async with database.session_factory.begin() as session:
@@ -85,16 +84,33 @@ async def run() -> int:
 
         for scenario in SCENARIOS:
             tools.calls.clear()
-            response = await service.respond(ChatRequest(message=scenario.message))
-            if not response.message.content:
+            updates = [
+                update
+                async for update in workflow.astream(
+                    {
+                        "messages": [
+                            {"role": "system", "content": CUSTOMER_SERVICE_SYSTEM_PROMPT},
+                            {"role": "user", "content": scenario.message},
+                        ]
+                    },
+                    stream_mode="updates",
+                )
+            ]
+            path = [next(iter(update)) for update in updates]
+            final_content = updates[-1]["model"]["messages"][-1]["content"]
+            if not final_content:
                 raise RuntimeError("model returned an empty final answer")
 
             if scenario.tool_name is None:
+                if path != ["model"]:
+                    raise RuntimeError("ordinary greeting followed an unexpected graph path")
                 if tools.calls:
                     raise RuntimeError("ordinary greeting unexpectedly called a tool")
                 passed.append("no_tool")
                 continue
 
+            if path != ["model", "tools", "model"]:
+                raise RuntimeError("tool scenario followed an unexpected graph path")
             if len(tools.calls) != 1:
                 raise RuntimeError("scenario did not execute exactly one tool")
             name, raw_arguments, raw_result = tools.calls[0]
@@ -109,13 +125,13 @@ async def run() -> int:
             passed.append(name if scenario.expected_found else "ownership")
     except (ModelError, RuntimeError, ValueError) as exc:
         code = exc.code if isinstance(exc, ModelError) else type(exc).__name__
-        print(f"M4 Tool Calling smoke failed: {code}", file=sys.stderr)
+        print(f"M5 LangGraph smoke failed: {code}", file=sys.stderr)
         return 1
     finally:
-        await service.close()
+        await model.close()
         await database.engine.dispose()
 
-    print(f"M4 Tool Calling smoke passed: model={settings.llm_model}, scenarios={','.join(passed)}")
+    print(f"M5 LangGraph smoke passed: model={settings.llm_model}, scenarios={','.join(passed)}")
     return 0
 
 

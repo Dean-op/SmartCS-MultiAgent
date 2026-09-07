@@ -71,7 +71,7 @@ def run_smoke_test(base_url: str, wait_seconds: float) -> None:
             if invalid_payload.get("error", {}).get("code") != "validation_error":
                 raise RuntimeError(f"unexpected validation error: {invalid_payload}")
 
-            print("M4 base smoke passed: dependencies, Swagger, and Chat validation are ready.")
+            print("M5 base smoke passed: dependencies, Swagger, and Chat validation are ready.")
             return
         except (OSError, ValueError, RuntimeError, urllib.error.HTTPError) as exc:
             last_error = f"{type(exc).__name__}: {exc}"

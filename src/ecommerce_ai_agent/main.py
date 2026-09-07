@@ -55,7 +55,7 @@ def create_app(
     application = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        description="M4 LLM and read-only Tool Calling API for the e-commerce AI Agent system.",
+        description="M5 LangGraph workflow API for the e-commerce AI Agent system.",
         lifespan=lifespan,
         docs_url="/docs",
         openapi_url="/openapi.json",
