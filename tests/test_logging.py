@@ -20,6 +20,7 @@ def test_json_formatter_emits_core_fields_and_structured_context() -> None:
     record.operation = "structured"
     record.latency_ms = 12.34
     record.outcome = "success"
+    record.tool_name = "get_product_by_sku"
 
     payload = json.loads(JsonFormatter().format(record))
 
@@ -32,6 +33,7 @@ def test_json_formatter_emits_core_fields_and_structured_context() -> None:
     assert payload["operation"] == "structured"
     assert payload["latency_ms"] == 12.34
     assert payload["outcome"] == "success"
+    assert payload["tool_name"] == "get_product_by_sku"
     assert payload["timestamp"].endswith("Z")
 
 

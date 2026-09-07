@@ -5,6 +5,7 @@ from pydantic import SecretStr
 from ecommerce_ai_agent.api.errors import ApplicationError
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.health import HealthChecker
+from ecommerce_ai_agent.llm.client import ModelTurn
 from ecommerce_ai_agent.llm.errors import ModelTimeoutError
 from ecommerce_ai_agent.main import create_app
 from ecommerce_ai_agent.services.chat import ChatService
@@ -102,14 +103,19 @@ async def test_unexpected_error_returns_generic_response_without_internal_detail
 @pytest.mark.asyncio
 async def test_model_error_uses_existing_error_contract() -> None:
     class TimeoutModel:
-        async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+        async def generate_turn(self, messages, tools) -> ModelTurn:
             raise ModelTimeoutError
 
         async def close(self) -> None:
             return None
 
     application = build_test_app()
-    application.state.chat_service = ChatService(TimeoutModel())
+
+    class FakeTools:
+        async def run(self, name: str, arguments: str) -> str:
+            return '{"found":false}'
+
+    application.state.chat_service = ChatService(TimeoutModel(), FakeTools())
     transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/v1/chat", json={"message": "hello"})

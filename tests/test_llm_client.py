@@ -22,8 +22,15 @@ from ecommerce_ai_agent.llm.schemas import MessageAssessment
 
 
 class FakeCompletions:
-    def __init__(self, *, content: str | None = "ok", error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        content: str | None = "ok",
+        tool_calls: list[Any] | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self.content = content
+        self.tool_calls = tool_calls
         self.error = error
         self.requests: list[dict[str, Any]] = []
 
@@ -31,7 +38,7 @@ class FakeCompletions:
         self.requests.append(kwargs)
         if self.error is not None:
             raise self.error
-        message = SimpleNamespace(content=self.content)
+        message = SimpleNamespace(content=self.content, tool_calls=self.tool_calls)
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
@@ -89,6 +96,62 @@ async def test_text_generation_uses_configured_model_without_tool_calling() -> N
     ]
     assert "tools" not in request
     assert "tool_choice" not in request
+
+
+@pytest.mark.asyncio
+async def test_tool_turn_returns_model_tool_calls_and_preserves_arguments() -> None:
+    provider_tool_call = SimpleNamespace(
+        id="call-order-1",
+        function=SimpleNamespace(
+            name="get_current_user_order",
+            arguments='{"order_number":"EC2026080001"}',
+        ),
+    )
+    completions = FakeCompletions(content=None, tool_calls=[provider_tool_call])
+    model = BailianModel(model_settings(), client=FakeOpenAI(completions))
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_current_user_order",
+                "description": "查询当前用户订单",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"order_number": {"type": "string"}},
+                    "required": ["order_number"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+
+    result = await model.generate_turn([{"role": "user", "content": "查一下 EC2026080001"}], tools)
+
+    assert result.content is None
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].id == "call-order-1"
+    assert result.tool_calls[0].name == "get_current_user_order"
+    assert result.tool_calls[0].arguments == '{"order_number":"EC2026080001"}'
+    request = completions.requests[0]
+    assert request["tools"] == tools
+    assert request["tool_choice"] == "auto"
+    assert request["extra_body"] == {"enable_thinking": False}
+
+
+@pytest.mark.asyncio
+async def test_tool_turn_can_return_direct_answer_without_tool_call() -> None:
+    model = BailianModel(
+        model_settings(),
+        client=FakeOpenAI(FakeCompletions(content="你好，有什么可以帮你？", tool_calls=[])),
+    )
+
+    result = await model.generate_turn(
+        [{"role": "user", "content": "你好"}],
+        [],
+    )
+
+    assert result.content == "你好，有什么可以帮你？"
+    assert result.tool_calls == ()
 
 
 @pytest.mark.asyncio

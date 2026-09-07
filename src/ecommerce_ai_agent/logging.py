@@ -11,6 +11,7 @@ CONTEXT_FIELDS = (
     "latency_ms",
     "outcome",
     "error_type",
+    "tool_name",
 )
 
 

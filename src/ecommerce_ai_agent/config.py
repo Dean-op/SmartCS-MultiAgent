@@ -38,3 +38,6 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_temperature: float = Field(default=0.2, ge=0, le=2)
     llm_max_completion_tokens: int = Field(default=800, ge=1, le=8192)
+
+    # Temporary trusted identity for local M4 verification; JWT will replace it later.
+    development_user_email: str = Field(default="alice@example.com", min_length=3)

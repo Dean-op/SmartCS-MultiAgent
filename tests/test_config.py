@@ -35,6 +35,14 @@ def test_model_settings_are_read_from_environment_without_exposing_api_key(monke
     assert "temporary-test-key" not in repr(settings)
 
 
+def test_development_user_identity_comes_from_server_environment(monkeypatch) -> None:
+    monkeypatch.setenv("DEVELOPMENT_USER_EMAIL", "alice@example.com")
+
+    settings = Settings(_env_file=None, postgres_password=SecretStr("test-password"))
+
+    assert settings.development_user_email == "alice@example.com"
+
+
 def test_model_provider_credentials_are_optional_for_non_llm_commands(monkeypatch) -> None:
     for variable in ("DASHSCOPE_API_KEY", "BAILIAN_BASE_URL", "LLM_MODEL"):
         monkeypatch.delenv(variable, raising=False)

@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.health import HealthChecker
+from ecommerce_ai_agent.llm.client import ModelTurn
 from ecommerce_ai_agent.main import create_app
 from ecommerce_ai_agent.services.chat import ChatService
 
@@ -19,11 +20,16 @@ async def healthy_probe() -> None:
 
 
 class FakeModel:
-    async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
-        return "来自 Fake Model 的回复"
+    async def generate_turn(self, messages, tools) -> ModelTurn:
+        return ModelTurn(content="来自 Fake Model 的回复", tool_calls=())
 
     async def close(self) -> None:
         return None
+
+
+class FakeTools:
+    async def run(self, name: str, arguments: str) -> str:
+        return '{"found":false}'
 
 
 def build_test_app():
@@ -38,7 +44,7 @@ def build_test_app():
     return create_app(
         settings=settings,
         health_checker=checker,
-        chat_service=ChatService(FakeModel()),
+        chat_service=ChatService(FakeModel(), FakeTools()),
     )
 
 

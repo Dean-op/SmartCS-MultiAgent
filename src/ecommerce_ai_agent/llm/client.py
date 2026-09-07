@@ -1,5 +1,6 @@
 import json
 import logging
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, TypeVar
 
@@ -21,6 +22,19 @@ from ecommerce_ai_agent.llm.errors import (
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ModelTurn:
+    content: str | None
+    tool_calls: tuple[ToolCall, ...]
 
 
 class BailianModel:
@@ -82,6 +96,26 @@ class BailianModel:
         self._log("structured", started_at, "success")
         return result
 
+    async def generate_turn(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ModelTurn:
+        started_at = perf_counter()
+        try:
+            completion = await self._complete(
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                extra_body={"enable_thinking": False},
+            )
+            turn = self._turn(completion)
+        except ModelError as exc:
+            self._log("tools", started_at, "failure", type(exc).__name__)
+            raise
+        self._log("tools", started_at, "success")
+        return turn
+
     async def close(self) -> None:
         await self._client.close()
 
@@ -130,6 +164,27 @@ class BailianModel:
         if not isinstance(content, str) or not content.strip():
             raise ModelProviderError
         return content.strip()
+
+    @staticmethod
+    def _turn(completion: Any) -> ModelTurn:
+        try:
+            message = completion.choices[0].message
+            provider_calls = message.tool_calls or []
+            tool_calls = tuple(
+                ToolCall(
+                    id=call.id,
+                    name=call.function.name,
+                    arguments=call.function.arguments,
+                )
+                for call in provider_calls
+            )
+        except (AttributeError, IndexError, TypeError) as exc:
+            raise ModelProviderError from exc
+
+        content = message.content.strip() if isinstance(message.content, str) else None
+        if not content and not tool_calls:
+            raise ModelProviderError
+        return ModelTurn(content=content, tool_calls=tool_calls)
 
     @staticmethod
     def _map_error(exception: openai.APIError) -> ModelError:

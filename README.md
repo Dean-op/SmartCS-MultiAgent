@@ -1,6 +1,6 @@
 # ecommerce-ai-agent
 
-面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M3：LLM 接入与结构化输出**。
+面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M4：Tool Calling**。
 
 ## 当前能力
 
@@ -12,11 +12,12 @@
 - `/api/v1` 版本化 API、稳定 Schema 和统一错误响应
 - 基于百炼 OpenAI-compatible API 和 `qwen3.8-27b` 的真实 Chat
 - JSON Object + Pydantic Structured Output
+- 订单、商品、退款三个只读 Tool 与最小 Tool Calling 循环
 - SQLAlchemy 2.x 异步数据访问、Alembic Migration 和幂等 Seed Data
 - User、Product、Order、OrderItem、Shipment、Refund、HumanReview 业务模型
 - 面向后续 Tool 的 Repository、Service 和只读 DTO 边界
 
-当前不包含 Agent、Tool Calling、RAG、JWT、Authorization、Redis Session、Celery Worker、LangGraph、OpenTelemetry 或 Evaluation。
+当前不包含 Agent、RAG、JWT、正式 Authorization、Redis Session、Celery Worker、LangGraph、OpenTelemetry 或 Evaluation。
 
 ## 环境要求
 
@@ -52,6 +53,7 @@ LLM_TIMEOUT_SECONDS=30
 LLM_MAX_RETRIES=2
 LLM_TEMPERATURE=0.2
 LLM_MAX_COMPLETION_TOKENS=800
+DEVELOPMENT_USER_EMAIL=alice@example.com
 ```
 
 Base URL 必须与 Key 所属地域和业务空间匹配。Key 缺失时应用与 health 仍可启动，但 Chat 返回 `503 model_not_configured`。
@@ -141,9 +143,9 @@ curl -X POST http://localhost:8000/api/v1/chat \
 - `conversation_id`：可选 UUID，只作为会话关联标识，不代表可信用户身份。
 - 不允许额外字段；身份认证将在后续里程碑实现。
 
-当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。客户端可在下一次请求中回传 `conversation_id`，但 M3 仍不保存会话状态。
+当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。客户端可在下一次请求中回传 `conversation_id`，但 M4 仍不保存会话状态。
 
-模型当前没有业务 Tool，因此不会声称已查询真实订单、修改数据库或创建退款。涉及真实业务操作时只提供一般指引。
+模型可自主调用三个只读 Tool：按订单号查询当前用户订单、按 SKU 查询商品、按退款单号查询当前用户退款。Tool 只调用 M2 Service；订单与退款会使用服务端 `DEVELOPMENT_USER_EMAIL` 对应的可信开发身份进行 ownership 限定。客户端和模型都不能提供可信 `user_id`。M4 仍不能修改订单或创建退款。
 
 所有 API 错误统一为：
 
@@ -174,6 +176,14 @@ uv run python scripts/llm_smoke_test.py
 ```
 
 该脚本依次验证普通文本生成和 `MessageAssessment` Structured Output。结构化输出使用 JSON Object 模式，提示词给出 JSON Schema，再由 Pydantic 校验为 typed result。脚本只输出模型名、字符数量、类型和耗时，不打印 Key、Endpoint、Prompt 或完整回复。真实调用会消耗额度。
+
+显式验证真实 Tool Calling（会调用百炼并读取本地 PostgreSQL Seed）：
+
+```bash
+uv run python scripts/tool_calling_smoke_test.py
+```
+
+该脚本验证订单、商品、退款、普通对话与跨用户 ownership 五个场景，并检查模型选择的 Tool、参数、真实 Tool Result 和最终回答。输出不包含 Key、Endpoint 或完整业务回答。
 
 Provider 错误复用现有 API Error Contract，区分未配置、鉴权失败、限流/额度、timeout、连接失败、Structured Output 无效和其他 Provider 错误。客户端不会收到 SDK traceback、Key、Authorization Header 或 Provider 原始错误正文。
 
@@ -241,6 +251,7 @@ docker compose build api
 docker compose up -d
 docker compose ps
 uv run python scripts/smoke_test.py
+uv run python scripts/tool_calling_smoke_test.py
 ```
 
 真实模型验收需要显式运行：
@@ -277,4 +288,4 @@ docker compose up -d --force-recreate
 
 ## 后续开发边界
 
-Agent、LangGraph、Tool Calling、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。M4 可直接复用 `BailianModel` 的客户端配置、请求生命周期、错误映射和日志字段；M2 Service 仍是 Tool 访问业务数据的唯一入口。
+Agent、LangGraph、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。后续 LangGraph 可直接复用 `BailianModel.generate_turn`、OpenAI Tool Schema、`BusinessTools.run` 和 M2 Service；M2 Service 仍是 Tool 访问业务数据的唯一入口。
