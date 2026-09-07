@@ -57,7 +57,7 @@ def create_app(
     application = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        description="M8 Dense RAG workflow API for the e-commerce AI Agent system.",
+        description="M9 Hybrid RAG workflow API for the e-commerce AI Agent system.",
         lifespan=lifespan,
         docs_url="/docs",
         openapi_url="/openapi.json",

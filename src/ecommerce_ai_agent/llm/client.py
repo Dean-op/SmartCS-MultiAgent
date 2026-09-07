@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, TypeVar
 
+import httpx
 import openai
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
@@ -37,8 +38,20 @@ class ModelTurn:
     tool_calls: tuple[ToolCall, ...]
 
 
+@dataclass(frozen=True)
+class RerankResult:
+    index: int
+    score: float
+
+
 class BailianModel:
-    def __init__(self, settings: Settings, *, client: AsyncOpenAI | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        client: AsyncOpenAI | None = None,
+        rerank_client: httpx.AsyncClient | Any | None = None,
+    ) -> None:
         if (
             not settings.dashscope_api_key
             or not settings.bailian_base_url
@@ -46,13 +59,21 @@ class BailianModel:
         ):
             raise ModelConfigurationError
 
+        self._api_key = settings.dashscope_api_key.get_secret_value()
         self._model = settings.llm_model
         self._temperature = settings.llm_temperature
         self._max_completion_tokens = settings.llm_max_completion_tokens
         self._embedding_model = settings.embedding_model
         self._embedding_dimensions = settings.embedding_dimensions
+        self._rerank_model = settings.rerank_model
+        self._rerank_client = rerank_client
+        if self._rerank_client is None and settings.bailian_rerank_base_url:
+            self._rerank_client = httpx.AsyncClient(
+                base_url=str(settings.bailian_rerank_base_url),
+                timeout=settings.llm_timeout_seconds,
+            )
         self._client = client or AsyncOpenAI(
-            api_key=settings.dashscope_api_key.get_secret_value(),
+            api_key=self._api_key,
             base_url=str(settings.bailian_base_url),
             timeout=settings.llm_timeout_seconds,
             max_retries=settings.llm_max_retries,
@@ -123,17 +144,21 @@ class BailianModel:
             return []
         started_at = perf_counter()
         try:
-            response = await self._client.embeddings.create(
-                model=self._embedding_model,
-                input=texts,
-                dimensions=self._embedding_dimensions,
-                encoding_format="float",
-            )
-            vectors = [
-                item.embedding for item in sorted(response.data, key=lambda item: item.index)
-            ]
-            if len(vectors) != len(texts):
-                raise ModelProviderError
+            vectors: list[list[float]] = []
+            for start in range(0, len(texts), 10):
+                batch = texts[start : start + 10]
+                response = await self._client.embeddings.create(
+                    model=self._embedding_model,
+                    input=batch,
+                    dimensions=self._embedding_dimensions,
+                    encoding_format="float",
+                )
+                batch_vectors = [
+                    item.embedding for item in sorted(response.data, key=lambda item: item.index)
+                ]
+                if len(batch_vectors) != len(batch):
+                    raise ModelProviderError
+                vectors.extend(batch_vectors)
         except openai.APIError as exc:
             error = self._map_error(exc)
             self._log(
@@ -157,7 +182,63 @@ class BailianModel:
         self._log("embedding", started_at, "success", model_name=self._embedding_model)
         return vectors
 
+    async def rerank_texts(
+        self,
+        query: str,
+        documents: list[str],
+        *,
+        top_n: int,
+    ) -> list[RerankResult]:
+        if not documents:
+            return []
+        if self._rerank_client is None:
+            raise ModelConfigurationError
+        started_at = perf_counter()
+        try:
+            response = await self._rerank_client.post(
+                "/reranks",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json={
+                    "model": self._rerank_model,
+                    "query": query,
+                    "documents": documents,
+                    "top_n": min(top_n, len(documents)),
+                },
+            )
+            response.raise_for_status()
+            results = [
+                RerankResult(index=int(item["index"]), score=float(item["relevance_score"]))
+                for item in response.json()["results"]
+            ]
+        except httpx.TimeoutException as exc:
+            error: ModelError = ModelTimeoutError()
+            self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
+            raise error from exc
+        except httpx.RequestError as exc:
+            error = ModelUnavailableError()
+            self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
+            raise error from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                error = ModelAuthenticationError()
+            elif exc.response.status_code == 429:
+                error = ModelRateLimitError()
+            elif exc.response.status_code in (400, 404, 422):
+                error = ModelConfigurationError()
+            else:
+                error = ModelProviderError()
+            self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
+            raise error from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            error = ModelProviderError()
+            self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
+            raise error from exc
+        self._log("rerank", started_at, "success", model_name=self._rerank_model)
+        return results
+
     async def close(self) -> None:
+        if self._rerank_client is not None:
+            await self._rerank_client.aclose()
         await self._client.close()
 
     async def _complete(self, **request: Any) -> Any:

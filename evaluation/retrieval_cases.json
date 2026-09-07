@@ -1,0 +1,62 @@
+[
+  {
+    "query": "七天无理由退货需要保持什么状态？",
+    "expected_source": "refund-policy.md",
+    "expected_contains": "不影响二次销售"
+  },
+  {
+    "query": "配送晚了是不是自动就能退款？",
+    "expected_source": "refund-policy.md",
+    "expected_contains": "不会自动产生退款资格"
+  },
+  {
+    "query": "物流信息48小时没有更新怎么办？",
+    "expected_source": "shipping-policy.md",
+    "expected_contains": "四十八小时没有更新"
+  },
+  {
+    "query": "退回商品到仓库后几天验收？",
+    "expected_source": "after-sales-policy.md",
+    "expected_contains": "三个工作日"
+  },
+  {
+    "query": "银行卡已经扣款但订单还是待支付，可以再付一次吗？",
+    "expected_source": "payment-policy.md",
+    "expected_contains": "不要重复付款"
+  },
+  {
+    "query": "订单完成后多久还能申请电子发票？",
+    "expected_source": "invoice-policy.md",
+    "expected_contains": "三十个自然日"
+  },
+  {
+    "query": "电子发票抬头写错了如何修改？",
+    "expected_source": "invoice-policy.md",
+    "expected_contains": "红冲并重开"
+  },
+  {
+    "query": "优惠券过期后可以兑换现金吗？",
+    "expected_source": "coupon-policy.md",
+    "expected_contains": "不能提现"
+  },
+  {
+    "query": "用了优惠券的订单退款后会返券吗？",
+    "expected_source": "coupon-policy.md",
+    "expected_contains": "可以退回原账户"
+  },
+  {
+    "query": "会员积分多久会过期清零？",
+    "expected_source": "membership-policy.md",
+    "expected_contains": "十二个月有效"
+  },
+  {
+    "query": "预售商品也必须48小时内发货吗？",
+    "expected_source": "preorder-policy.md",
+    "expected_contains": "不适用现货订单四十八小时"
+  },
+  {
+    "query": "预售超过承诺日期还没发货能取消吗？",
+    "expected_source": "preorder-policy.md",
+    "expected_contains": "申请取消未发货订单"
+  }
+]

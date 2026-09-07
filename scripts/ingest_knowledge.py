@@ -10,6 +10,7 @@ from ecommerce_ai_agent.llm.client import BailianModel
 from ecommerce_ai_agent.llm.errors import ModelError
 
 KNOWLEDGE_DIRECTORY = Path(__file__).resolve().parents[1] / "knowledge"
+KNOWLEDGE_DOCUMENT_COUNT = len(tuple(KNOWLEDGE_DIRECTORY.glob("*.md")))
 
 
 async def run() -> int:
@@ -18,7 +19,7 @@ async def run() -> int:
     knowledge = KnowledgeBase(settings, model)
     try:
         chunks = await asyncio.to_thread(chunk_markdown_documents, KNOWLEDGE_DIRECTORY)
-        count = await knowledge.ingest(chunks)
+        count = await knowledge.ingest(chunks, rebuild=True)
     except ModelError as exc:
         print(f"Knowledge ingestion failed: {exc.code}", file=sys.stderr)
         return 1
@@ -28,7 +29,8 @@ async def run() -> int:
 
     print(
         f"Knowledge ingestion complete: collection={settings.knowledge_collection}, "
-        f"documents=4, chunks={count}, dimensions={settings.embedding_dimensions}"
+        f"documents={KNOWLEDGE_DOCUMENT_COUNT}, chunks={count}, "
+        f"dimensions={settings.embedding_dimensions}"
     )
     return 0
 

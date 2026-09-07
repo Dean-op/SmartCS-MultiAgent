@@ -48,7 +48,11 @@ class Settings(BaseSettings):
         pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
     )
     knowledge_top_k: int = Field(default=3, ge=1, le=10)
-    knowledge_min_score: float = Field(default=0.5, ge=0, le=1)
+    bailian_rerank_base_url: AnyHttpUrl | None = None
+    rerank_model: str = Field(default="qwen3-rerank", min_length=1)
+    hybrid_candidate_k: int = Field(default=10, ge=2, le=50)
+    rrf_k: float = Field(default=60, gt=0, le=16384)
+    rerank_min_score: float = Field(default=0.2, ge=0, le=1)
 
     # Temporary trusted identity for local M4 verification; JWT will replace it later.
     development_user_email: str = Field(default="alice@example.com", min_length=3)

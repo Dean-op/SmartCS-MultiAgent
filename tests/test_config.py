@@ -48,7 +48,6 @@ def test_dense_rag_settings_are_read_from_environment(monkeypatch) -> None:
     monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1024")
     monkeypatch.setenv("KNOWLEDGE_COLLECTION", "ecommerce_knowledge")
     monkeypatch.setenv("KNOWLEDGE_TOP_K", "3")
-    monkeypatch.setenv("KNOWLEDGE_MIN_SCORE", "0.5")
 
     settings = Settings(_env_file=None, postgres_password=SecretStr("test-password"))
 
@@ -56,7 +55,22 @@ def test_dense_rag_settings_are_read_from_environment(monkeypatch) -> None:
     assert settings.embedding_dimensions == 1024
     assert settings.knowledge_collection == "ecommerce_knowledge"
     assert settings.knowledge_top_k == 3
-    assert settings.knowledge_min_score == 0.5
+
+
+def test_hybrid_and_rerank_settings_are_read_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("BAILIAN_RERANK_BASE_URL", "https://example.com/compatible-api/v1")
+    monkeypatch.setenv("RERANK_MODEL", "qwen3-rerank")
+    monkeypatch.setenv("HYBRID_CANDIDATE_K", "10")
+    monkeypatch.setenv("RRF_K", "60")
+    monkeypatch.setenv("RERANK_MIN_SCORE", "0.2")
+
+    settings = Settings(_env_file=None, postgres_password=SecretStr("test-password"))
+
+    assert str(settings.bailian_rerank_base_url) == "https://example.com/compatible-api/v1"
+    assert settings.rerank_model == "qwen3-rerank"
+    assert settings.hybrid_candidate_k == 10
+    assert settings.rrf_k == 60
+    assert settings.rerank_min_score == 0.2
 
 
 def test_model_provider_credentials_are_optional_for_non_llm_commands(monkeypatch) -> None:

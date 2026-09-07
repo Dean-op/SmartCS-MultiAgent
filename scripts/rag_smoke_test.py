@@ -24,12 +24,23 @@ async def run() -> int:
     )
     try:
         question = "配送延迟是否会自动符合退款条件？"
-        results = await knowledge.search(question)
-        if not results or results[0].source not in {
-            "refund-policy.md",
-            "shipping-policy.md",
-        }:
-            raise RuntimeError("Dense Retrieval did not return a relevant policy source")
+        dense = await knowledge.dense_search(question)
+        bm25 = await knowledge.bm25_search("物流48小时")
+        hybrid = await knowledge.hybrid_search(question)
+        results = await knowledge.rerank_candidates(question, hybrid)
+        if (
+            not dense
+            or not hybrid
+            or not results
+            or results[0].source
+            not in {
+                "refund-policy.md",
+                "shipping-policy.md",
+            }
+        ):
+            raise RuntimeError("Hybrid Retrieval did not return a relevant policy source")
+        if not bm25 or bm25[0].source != "shipping-policy.md":
+            raise RuntimeError("BM25 did not return the exact numeric policy source")
 
         updates = [
             update
@@ -51,7 +62,7 @@ async def run() -> int:
             raise RuntimeError("Knowledge Agent answer did not include sources")
     except (ModelError, RuntimeError, ValueError) as exc:
         code = exc.code if isinstance(exc, ModelError) else type(exc).__name__
-        print(f"M8 Dense RAG smoke failed: {code}: {exc}", file=sys.stderr)
+        print(f"M9 Hybrid RAG smoke failed: {code}: {exc}", file=sys.stderr)
         return 1
     finally:
         await knowledge.close()
@@ -60,8 +71,8 @@ async def run() -> int:
 
     sources = ",".join(result.source for result in results)
     print(
-        f"M8 Dense RAG smoke passed: embedding={settings.embedding_model}, "
-        f"dimensions={settings.embedding_dimensions}, top_k={len(results)}, sources={sources}"
+        f"M9 Hybrid RAG smoke passed: embedding={settings.embedding_model}, "
+        f"reranker={settings.rerank_model}, top_k={len(results)}, sources={sources}"
     )
     return 0
 

@@ -37,7 +37,7 @@ async def test_openapi_describes_versioned_chat_contract_and_error_responses() -
     schema = response.json()
     assert schema["info"]["title"] == "ecommerce-ai-agent"
     assert schema["info"]["version"] == "0.1.0"
-    assert "M8" in schema["info"]["description"]
+    assert "M9" in schema["info"]["description"]
 
     operation = schema["paths"]["/api/v1/chat"]["post"]
     assert operation["requestBody"]["content"]["application/json"]["schema"] == {

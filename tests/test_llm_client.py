@@ -196,6 +196,88 @@ async def test_dense_embedding_uses_configured_model_and_dimensions(caplog) -> N
 
 
 @pytest.mark.asyncio
+async def test_text_embedding_v4_batches_at_ten_inputs() -> None:
+    class BatchEmbeddings:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        async def create(self, **kwargs):
+            batch_size = len(kwargs["input"])
+            self.batch_sizes.append(batch_size)
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(index=index, embedding=[float(index)])
+                    for index in range(batch_size)
+                ]
+            )
+
+    embeddings = BatchEmbeddings()
+    model = BailianModel(
+        model_settings(),
+        client=FakeOpenAI(FakeCompletions(), embeddings),
+    )
+
+    vectors = await model.embed_texts([f"chunk-{index}" for index in range(11)])
+
+    assert embeddings.batch_sizes == [10, 1]
+    assert len(vectors) == 11
+
+
+@pytest.mark.asyncio
+async def test_text_rerank_calls_qwen3_compatible_endpoint_and_returns_scores() -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "results": [
+                    {"index": 1, "relevance_score": 0.91},
+                    {"index": 0, "relevance_score": 0.63},
+                ]
+            }
+
+    class FakeRerankClient:
+        def __init__(self) -> None:
+            self.requests: list[tuple[str, dict]] = []
+
+        async def post(self, path: str, **kwargs):
+            self.requests.append((path, kwargs))
+            return FakeResponse()
+
+        async def aclose(self) -> None:
+            return None
+
+    rerank_client = FakeRerankClient()
+    model = BailianModel(
+        model_settings(
+            bailian_rerank_base_url="https://example.com/compatible-api/v1",
+            rerank_model="qwen3-rerank",
+        ),
+        client=FakeOpenAI(FakeCompletions()),
+        rerank_client=rerank_client,
+    )
+
+    results = await model.rerank_texts("退款期限", ["配送政策", "七天退款政策"], top_n=2)
+
+    assert [(result.index, result.score) for result in results] == [(1, 0.91), (0, 0.63)]
+    assert rerank_client.requests == [
+        (
+            "/reranks",
+            {
+                "headers": {"Authorization": "Bearer test-api-key"},
+                "json": {
+                    "model": "qwen3-rerank",
+                    "query": "退款期限",
+                    "documents": ["配送政策", "七天退款政策"],
+                    "top_n": 2,
+                },
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_structured_generation_returns_validated_typed_result() -> None:
     completions = FakeCompletions(
         content='{"summary":"查询订单状态","requires_business_action":true,"reason":"需要真实订单数据"}'
