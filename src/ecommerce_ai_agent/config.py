@@ -39,5 +39,16 @@ class Settings(BaseSettings):
     llm_temperature: float = Field(default=0.2, ge=0, le=2)
     llm_max_completion_tokens: int = Field(default=800, ge=1, le=8192)
 
+    embedding_model: str = Field(default="text-embedding-v4", min_length=1)
+    embedding_dimensions: int = Field(default=1024, ge=64, le=2048)
+    knowledge_collection: str = Field(
+        default="ecommerce_knowledge",
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+    )
+    knowledge_top_k: int = Field(default=3, ge=1, le=10)
+    knowledge_min_score: float = Field(default=0.5, ge=0, le=1)
+
     # Temporary trusted identity for local M4 verification; JWT will replace it later.
     development_user_email: str = Field(default="alice@example.com", min_length=3)

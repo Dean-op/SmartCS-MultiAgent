@@ -2,8 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SpecialistRoute = Literal["order", "refund", "product"]
-RouteName = Literal["order", "refund", "product", "general", "complex"]
+SpecialistRoute = Literal["order", "refund", "product", "knowledge"]
+RouteName = Literal["order", "refund", "product", "knowledge", "general", "complex"]
 
 
 class MessageAssessment(BaseModel):

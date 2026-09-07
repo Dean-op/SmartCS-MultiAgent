@@ -49,6 +49,8 @@ class BailianModel:
         self._model = settings.llm_model
         self._temperature = settings.llm_temperature
         self._max_completion_tokens = settings.llm_max_completion_tokens
+        self._embedding_model = settings.embedding_model
+        self._embedding_dimensions = settings.embedding_dimensions
         self._client = client or AsyncOpenAI(
             api_key=settings.dashscope_api_key.get_secret_value(),
             base_url=str(settings.bailian_base_url),
@@ -116,6 +118,45 @@ class BailianModel:
         self._log("tools", started_at, "success")
         return turn
 
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        started_at = perf_counter()
+        try:
+            response = await self._client.embeddings.create(
+                model=self._embedding_model,
+                input=texts,
+                dimensions=self._embedding_dimensions,
+                encoding_format="float",
+            )
+            vectors = [
+                item.embedding for item in sorted(response.data, key=lambda item: item.index)
+            ]
+            if len(vectors) != len(texts):
+                raise ModelProviderError
+        except openai.APIError as exc:
+            error = self._map_error(exc)
+            self._log(
+                "embedding",
+                started_at,
+                "failure",
+                type(error).__name__,
+                self._embedding_model,
+            )
+            raise error from exc
+        except (AttributeError, TypeError) as exc:
+            error = ModelProviderError()
+            self._log(
+                "embedding",
+                started_at,
+                "failure",
+                type(error).__name__,
+                self._embedding_model,
+            )
+            raise error from exc
+        self._log("embedding", started_at, "success", model_name=self._embedding_model)
+        return vectors
+
     async def close(self) -> None:
         await self._client.close()
 
@@ -136,10 +177,11 @@ class BailianModel:
         started_at: float,
         outcome: str,
         error_type: str | None = None,
+        model_name: str | None = None,
     ) -> None:
         extra = {
             "provider": "bailian",
-            "model": self._model,
+            "model": model_name or self._model,
             "operation": operation,
             "latency_ms": round((perf_counter() - started_at) * 1000, 2),
             "outcome": outcome,

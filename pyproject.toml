@@ -12,6 +12,7 @@ dependencies = [
     "langgraph>=1.2,<2",
     "openai>=3.8,<4",
     "pydantic-settings>=2.10,<3",
+    "pymilvus>=2.6,<2.7",
     "redis>=6.4,<8",
     "sqlalchemy[asyncio]>=2.0,<2.1",
     "uvicorn[standard]>=0.35,<1",

@@ -118,7 +118,14 @@ async def test_model_error_uses_existing_error_contract() -> None:
         async def run(self, name: str, arguments: str) -> str:
             return '{"found":false}'
 
-    application.state.chat_service = ChatService(TimeoutModel(), FakeTools())
+    class FakeKnowledge:
+        async def search(self, question: str) -> list:
+            return []
+
+        async def close(self) -> None:
+            return None
+
+    application.state.chat_service = ChatService(TimeoutModel(), FakeTools(), FakeKnowledge())
     transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/v1/chat", json={"message": "hello"})

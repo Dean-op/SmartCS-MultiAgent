@@ -43,6 +43,22 @@ def test_development_user_identity_comes_from_server_environment(monkeypatch) ->
     assert settings.development_user_email == "alice@example.com"
 
 
+def test_dense_rag_settings_are_read_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-v4")
+    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1024")
+    monkeypatch.setenv("KNOWLEDGE_COLLECTION", "ecommerce_knowledge")
+    monkeypatch.setenv("KNOWLEDGE_TOP_K", "3")
+    monkeypatch.setenv("KNOWLEDGE_MIN_SCORE", "0.5")
+
+    settings = Settings(_env_file=None, postgres_password=SecretStr("test-password"))
+
+    assert settings.embedding_model == "text-embedding-v4"
+    assert settings.embedding_dimensions == 1024
+    assert settings.knowledge_collection == "ecommerce_knowledge"
+    assert settings.knowledge_top_k == 3
+    assert settings.knowledge_min_score == 0.5
+
+
 def test_model_provider_credentials_are_optional_for_non_llm_commands(monkeypatch) -> None:
     for variable in ("DASHSCOPE_API_KEY", "BAILIAN_BASE_URL", "LLM_MODEL"):
         monkeypatch.delenv(variable, raising=False)

@@ -2,6 +2,7 @@ from typing import Any
 
 import pytest
 
+from ecommerce_ai_agent.knowledge import SearchResult
 from ecommerce_ai_agent.llm.client import ModelTurn, ToolCall
 from ecommerce_ai_agent.llm.errors import ModelProviderError
 from ecommerce_ai_agent.llm.schemas import RouteDecision, RouteName, SupervisorPlan
@@ -15,11 +16,12 @@ class ScriptedModel:
         *turns: ModelTurn,
         plan: tuple[str, ...] = (),
         text_response: str = "你好，有什么可以帮你？",
+        text_responses: tuple[str, ...] | None = None,
     ) -> None:
         self.route = route
         self.turns = list(turns)
         self.plan = plan
-        self.text_response = text_response
+        self.text_responses = list(text_responses or (text_response,))
         self.route_calls: list[tuple[str, str, type]] = []
         self.turn_tools: list[list[dict[str, Any]]] = []
         self.general_calls: list[tuple[str, str]] = []
@@ -36,7 +38,7 @@ class ScriptedModel:
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         self.general_calls.append((system_prompt, user_prompt))
-        return self.text_response
+        return self.text_responses.pop(0)
 
 
 class RecordingTools:
@@ -46,6 +48,16 @@ class RecordingTools:
     async def run(self, name: str, arguments: str) -> str:
         self.calls.append((name, arguments))
         return '{"found":true}'
+
+
+class FakeKnowledge:
+    def __init__(self, results: list[SearchResult]) -> None:
+        self.results = results
+        self.questions: list[str] = []
+
+    async def search(self, question: str) -> list[SearchResult]:
+        self.questions.append(question)
+        return self.results
 
 
 async def graph_updates(graph, message: str) -> list[dict[str, Any]]:
@@ -66,7 +78,7 @@ async def graph_path(graph, message: str) -> list[str]:
 async def test_general_route_ends_without_exposing_or_executing_business_tools() -> None:
     model = ScriptedModel("general", ModelTurn(content="wrong M5 path", tool_calls=()))
     tools = RecordingTools()
-    graph = build_chat_workflow(model, tools)
+    graph = build_chat_workflow(model, tools, FakeKnowledge([]))
 
     path = await graph_path(graph, "你好")
 
@@ -99,7 +111,7 @@ async def test_complex_order_refund_runs_supervisor_plan_sequentially_and_summar
         text_response="订单已完成，相关退款正在处理中。",
     )
     tools = RecordingTools()
-    graph = build_chat_workflow(model, tools)
+    graph = build_chat_workflow(model, tools, FakeKnowledge([]))
 
     updates = await graph_updates(graph, "查询订单和相关退款")
     path = [next(iter(update)) for update in updates]
@@ -159,7 +171,7 @@ async def test_complex_order_product_uses_the_requested_two_specialists() -> Non
         plan=("order", "product"),
         text_response="订单商品当前售价 299 元。",
     )
-    graph = build_chat_workflow(model, RecordingTools())
+    graph = build_chat_workflow(model, RecordingTools(), FakeKnowledge([]))
 
     path = await graph_path(graph, "查询订单商品当前价格")
 
@@ -193,12 +205,94 @@ async def test_complex_step_cannot_call_a_later_specialists_tool() -> None:
             plan=("order", "refund"),
         ),
         tools,
+        FakeKnowledge([]),
     )
 
     with pytest.raises(ModelProviderError):
         await graph_path(graph, "先查询订单再查询退款")
 
     assert tools.calls == []
+
+
+@pytest.mark.asyncio
+async def test_knowledge_route_answers_from_retrieval_and_appends_source() -> None:
+    model = ScriptedModel("knowledge", text_response="平台支持七天无理由退货。")
+    knowledge = FakeKnowledge(
+        [
+            SearchResult(
+                chunk_id="refund-1",
+                source="refund-policy.md",
+                content="符合条件的商品支持签收后七天内申请无理由退货。",
+                score=0.88,
+            )
+        ]
+    )
+    graph = build_chat_workflow(model, RecordingTools(), knowledge)
+
+    updates = await graph_updates(graph, "退款政策是什么？")
+
+    assert [next(iter(update)) for update in updates] == ["router", "knowledge_agent"]
+    answer = updates[-1]["knowledge_agent"]["messages"][-1]["content"]
+    assert answer == "平台支持七天无理由退货。\n\n来源：refund-policy.md"
+    assert knowledge.questions == ["退款政策是什么？"]
+    assert "符合条件的商品支持签收后七天内申请无理由退货。" in model.general_calls[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_route_does_not_ask_llm_to_invent_when_retrieval_is_empty() -> None:
+    model = ScriptedModel("knowledge")
+    graph = build_chat_workflow(model, RecordingTools(), FakeKnowledge([]))
+
+    updates = await graph_updates(graph, "会员生日有什么特殊政策？")
+
+    assert updates[-1]["knowledge_agent"]["messages"][-1]["content"] == (
+        "知识库中没有找到足够依据。"
+    )
+    assert model.general_calls == []
+
+
+@pytest.mark.asyncio
+async def test_complex_order_knowledge_runs_existing_order_agent_then_dense_rag() -> None:
+    order_call = ToolCall(
+        id="order-call",
+        name="get_current_user_order",
+        arguments='{"order_number":"EC2026080011"}',
+    )
+    model = ScriptedModel(
+        "complex",
+        ModelTurn(content=None, tool_calls=(order_call,)),
+        ModelTurn(content="订单配送发生延迟。", tool_calls=()),
+        plan=("order", "knowledge"),
+        text_responses=(
+            "政策规定配送延迟可联系平台协商。",
+            "订单发生延迟，可按配送政策联系平台。来源：shipping-policy.md",
+        ),
+    )
+    knowledge = FakeKnowledge(
+        [
+            SearchResult(
+                chunk_id="shipping-1",
+                source="shipping-policy.md",
+                content="配送延迟时，用户可以联系平台客服协商解决。",
+                score=0.84,
+            )
+        ]
+    )
+    graph = build_chat_workflow(model, RecordingTools(), knowledge)
+
+    path = await graph_path(graph, "查看订单 EC2026080011，配送延迟时有什么政策？")
+
+    assert path == [
+        "router",
+        "supervisor",
+        "order_agent",
+        "tools",
+        "order_agent",
+        "supervisor_step",
+        "knowledge_agent",
+        "supervisor_step",
+        "supervisor_final",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -238,7 +332,7 @@ async def test_specialist_route_exposes_only_its_tool_and_returns_through_same_a
         ModelTurn(content="最终回答", tool_calls=()),
     )
     tools = RecordingTools()
-    graph = build_chat_workflow(model, tools)
+    graph = build_chat_workflow(model, tools, FakeKnowledge([]))
 
     path = await graph_path(graph, "查询业务数据")
 
@@ -271,6 +365,7 @@ async def test_specialist_rejects_another_agents_tool_call(
     graph = build_chat_workflow(
         ScriptedModel(route, ModelTurn(content=None, tool_calls=(wrong_call,))),
         tools,
+        FakeKnowledge([]),
     )
 
     with pytest.raises(ModelProviderError):

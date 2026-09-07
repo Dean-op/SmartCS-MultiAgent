@@ -43,8 +43,9 @@ class FakeCompletions:
 
 
 class FakeOpenAI:
-    def __init__(self, completions: FakeCompletions) -> None:
+    def __init__(self, completions: FakeCompletions, embeddings=None) -> None:
         self.chat = SimpleNamespace(completions=completions)
+        self.embeddings = embeddings
         self.closed = False
 
     async def close(self) -> None:
@@ -152,6 +153,46 @@ async def test_tool_turn_can_return_direct_answer_without_tool_call() -> None:
 
     assert result.content == "你好，有什么可以帮你？"
     assert result.tool_calls == ()
+
+
+@pytest.mark.asyncio
+async def test_dense_embedding_uses_configured_model_and_dimensions(caplog) -> None:
+    class FakeEmbeddings:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs):
+            self.requests.append(kwargs)
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(index=0, embedding=[0.1, 0.2]),
+                    SimpleNamespace(index=1, embedding=[0.3, 0.4]),
+                ]
+            )
+
+    embeddings = FakeEmbeddings()
+    model = BailianModel(
+        model_settings(
+            embedding_model="text-embedding-v4",
+            embedding_dimensions=1024,
+        ),
+        client=FakeOpenAI(FakeCompletions(), embeddings),
+    )
+
+    with caplog.at_level(logging.INFO, logger="ecommerce_ai_agent.llm.client"):
+        vectors = await model.embed_texts(["退款政策", "配送政策"])
+
+    assert vectors == [[0.1, 0.2], [0.3, 0.4]]
+    assert embeddings.requests == [
+        {
+            "model": "text-embedding-v4",
+            "input": ["退款政策", "配送政策"],
+            "dimensions": 1024,
+            "encoding_format": "float",
+        }
+    ]
+    record = next(record for record in caplog.records if record.operation == "embedding")
+    assert record.model == "text-embedding-v4"
 
 
 @pytest.mark.asyncio

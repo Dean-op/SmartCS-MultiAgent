@@ -11,6 +11,7 @@ from ecommerce_ai_agent.business_tools import BusinessTools
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.database import Database, create_database
 from ecommerce_ai_agent.health import HealthChecker, build_health_checker
+from ecommerce_ai_agent.knowledge import KnowledgeBase
 from ecommerce_ai_agent.llm.client import BailianModel
 from ecommerce_ai_agent.llm.errors import ModelConfigurationError
 from ecommerce_ai_agent.logging import configure_logging
@@ -35,6 +36,7 @@ def create_app(
             chat_service = ChatService(
                 model,
                 BusinessTools(database.session_factory, settings.development_user_email),
+                KnowledgeBase(settings, model),
             )
         except ModelConfigurationError:
             chat_service = None
@@ -55,7 +57,7 @@ def create_app(
     application = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        description="M7 Supervisor workflow API for the e-commerce AI Agent system.",
+        description="M8 Dense RAG workflow API for the e-commerce AI Agent system.",
         lifespan=lifespan,
         docs_url="/docs",
         openapi_url="/openapi.json",

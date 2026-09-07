@@ -38,6 +38,14 @@ class FakeTools:
         return '{"found":false}'
 
 
+class FakeKnowledge:
+    async def search(self, question: str) -> list:
+        return []
+
+    async def close(self) -> None:
+        return None
+
+
 def build_test_app():
     settings = Settings(_env_file=None, postgres_password=SecretStr("test-password"))
     checker = HealthChecker(
@@ -50,7 +58,7 @@ def build_test_app():
     return create_app(
         settings=settings,
         health_checker=checker,
-        chat_service=ChatService(FakeModel(), FakeTools()),
+        chat_service=ChatService(FakeModel(), FakeTools(), FakeKnowledge()),
     )
 
 

@@ -51,6 +51,17 @@ class RecordingTools:
         return self.result
 
 
+class FakeKnowledge:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def search(self, question: str) -> list:
+        return []
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 @pytest.mark.asyncio
 async def test_chat_service_executes_tool_then_returns_final_model_answer() -> None:
     conversation_id = uuid4()
@@ -64,7 +75,7 @@ async def test_chat_service_executes_tool_then_returns_final_model_answer() -> N
         ModelTurn(content="订单正在运输中。", tool_calls=()),
     )
     tools = RecordingTools()
-    service = ChatService(model, tools)
+    service = ChatService(model, tools, FakeKnowledge())
 
     response = await service.respond(
         ChatRequest(message="查询订单 EC2026080016", conversation_id=conversation_id)
@@ -109,7 +120,7 @@ async def test_chat_service_executes_tool_then_returns_final_model_answer() -> N
 async def test_chat_service_allows_direct_answer_without_tool_execution() -> None:
     model = RecordingModel(route="general", general_text="你好！")
     tools = RecordingTools()
-    service = ChatService(model, tools)
+    service = ChatService(model, tools, FakeKnowledge())
 
     response = await service.respond(ChatRequest(message="你好"))
 
@@ -124,7 +135,11 @@ async def test_chat_service_stops_repeated_tool_calls_after_two_rounds() -> None
         content=None,
         tool_calls=(ToolCall(id="call", name="get_product_by_sku", arguments='{"sku":"x"}'),),
     )
-    service = ChatService(RecordingModel(repeated, repeated, route="product"), RecordingTools())
+    service = ChatService(
+        RecordingModel(repeated, repeated, route="product"),
+        RecordingTools(),
+        FakeKnowledge(),
+    )
 
     with pytest.raises(ModelProviderError):
         await service.respond(ChatRequest(message="查询商品"))
@@ -133,8 +148,10 @@ async def test_chat_service_stops_repeated_tool_calls_after_two_rounds() -> None
 @pytest.mark.asyncio
 async def test_chat_service_closes_model_client() -> None:
     model = RecordingModel(route="general")
-    service = ChatService(model, RecordingTools())
+    knowledge = FakeKnowledge()
+    service = ChatService(model, RecordingTools(), knowledge)
 
     await service.close()
 
     assert model.closed is True
+    assert knowledge.closed is True

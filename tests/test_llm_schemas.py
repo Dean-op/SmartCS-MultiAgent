@@ -21,3 +21,13 @@ def test_m7_route_and_supervisor_plan_allow_only_minimal_unique_specialists() ->
     for steps in (["order"], ["order", "order"], ["order", "general"]):
         with pytest.raises(ValidationError):
             SupervisorPlan(steps=steps)
+
+
+def test_m8_router_and_supervisor_allow_knowledge() -> None:
+    from ecommerce_ai_agent.llm.schemas import RouteDecision, SupervisorPlan
+
+    assert RouteDecision(route="knowledge").route == "knowledge"
+    assert SupervisorPlan(steps=["order", "knowledge"]).steps == (
+        "order",
+        "knowledge",
+    )

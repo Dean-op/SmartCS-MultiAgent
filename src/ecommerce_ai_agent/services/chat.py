@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from ecommerce_ai_agent.business_tools import BusinessTools
+from ecommerce_ai_agent.knowledge import KnowledgeBase
 from ecommerce_ai_agent.llm.client import BailianModel
 from ecommerce_ai_agent.llm.errors import ModelProviderError
 from ecommerce_ai_agent.schemas.chat import AssistantMessage, ChatRequest, ChatResponse
@@ -9,9 +10,15 @@ from ecommerce_ai_agent.workflow import CUSTOMER_SERVICE_SYSTEM_PROMPT, build_ch
 
 
 class ChatService:
-    def __init__(self, model: BailianModel, tools: BusinessTools) -> None:
+    def __init__(
+        self,
+        model: BailianModel,
+        tools: BusinessTools,
+        knowledge: KnowledgeBase,
+    ) -> None:
         self._model = model
-        self._workflow = build_chat_workflow(model, tools)
+        self._knowledge = knowledge
+        self._workflow = build_chat_workflow(model, tools, knowledge)
 
     async def respond(self, request: ChatRequest) -> ChatResponse:
         state = await self._workflow.ainvoke(
@@ -35,4 +42,5 @@ class ChatService:
         )
 
     async def close(self) -> None:
+        await self._knowledge.close()
         await self._model.close()

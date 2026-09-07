@@ -1,6 +1,6 @@
 # ecommerce-ai-agent
 
-面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M7：Supervisor 与跨 Agent 协作**。
+面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M8：Dense RAG + Knowledge Agent**。
 
 ## 当前能力
 
@@ -15,11 +15,12 @@
 - 订单、商品、退款三个只读 Tool 与最小 Tool Calling 循环
 - Structured Router、三个 Specialist 节点与隔离的 Tool 访问
 - Structured Supervisor Plan 与 Specialist 顺序协作、结果汇总
+- `text-embedding-v4` + Milvus Dense Retrieval + Knowledge Agent
 - SQLAlchemy 2.x 异步数据访问、Alembic Migration 和幂等 Seed Data
 - User、Product、Order、OrderItem、Shipment、Refund、HumanReview 业务模型
 - 面向后续 Tool 的 Repository、Service 和只读 DTO 边界
 
-当前不包含并行执行、Replanning、RAG、JWT、正式 Authorization、Redis Session、Celery Worker、Checkpointer、OpenTelemetry 或 Evaluation。
+当前不包含 Sparse/Hybrid Search、Reranker、Memory、JWT、正式 Authorization、Redis Session、Checkpointer、OpenTelemetry 或 Evaluation。
 
 ## 环境要求
 
@@ -55,6 +56,11 @@ LLM_TIMEOUT_SECONDS=30
 LLM_MAX_RETRIES=2
 LLM_TEMPERATURE=0.2
 LLM_MAX_COMPLETION_TOKENS=800
+EMBEDDING_MODEL=text-embedding-v4
+EMBEDDING_DIMENSIONS=1024
+KNOWLEDGE_COLLECTION=ecommerce_knowledge
+KNOWLEDGE_TOP_K=3
+KNOWLEDGE_MIN_SCORE=0.5
 DEVELOPMENT_USER_EMAIL=alice@example.com
 ```
 
@@ -145,9 +151,9 @@ curl -X POST http://localhost:8000/api/v1/chat \
 - `conversation_id`：可选 UUID，只作为会话关联标识，不代表可信用户身份。
 - 不允许额外字段；身份认证将在后续里程碑实现。
 
-当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。客户端可在下一次请求中回传 `conversation_id`，但 M7 仍不保存会话状态。
+当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。客户端可在下一次请求中回传 `conversation_id`，但 M8 仍不保存会话状态。
 
-模型可调用三个只读 Tool：按订单号查询当前用户订单、按 SKU 查询商品、按退款单号查询当前用户退款。Tool 只调用 M2 Service；订单与退款会使用服务端 `DEVELOPMENT_USER_EMAIL` 对应的可信开发身份进行 ownership 限定。客户端和模型都不能提供可信 `user_id`。M7 仍不能修改订单或创建退款。
+模型可调用三个只读 Tool，并可通过 Knowledge Agent 回答退款、配送、售后和支付政策。业务 Tool 仍只调用 M2 Service；Knowledge Agent 只使用 Milvus 检索结果。M8 仍不能修改订单或创建退款。
 
 ## LangGraph Workflow
 
@@ -157,13 +163,32 @@ M7 在简单 Route 保持不变的基础上增加 complex 与 Supervisor：
 START → router ─┬→ order_agent   → tools → order_agent   → END
                 ├→ refund_agent  → tools → refund_agent  → END
                 ├→ product_agent → tools → product_agent → END
+                ├→ knowledge_agent → Dense Retrieval → LLM → END
                 ├→ general_agent                           → END
                 └→ complex → supervisor → specialist → tools → specialist
                              → supervisor_step → 下一个 specialist
                              → supervisor_final → END
 ```
 
-Supervisor 使用 Structured Output 生成由 order/refund/product 组成的 2～3 步顺序计划，不持有业务 Tool。State 在 `messages` 和 `route` 外只保存 `plan`、`current_step`、`agent_results` 与单步 Tool 标记。Workflow 没有并行、Replanning、Checkpointer、Memory 或持久化。
+Supervisor Plan 允许 order/refund/product/knowledge。Knowledge Agent 不持有业务 Tool，也不向 State 增加 retrieved documents；复杂路径继续复用现有 `agent_results`。
+
+## Dense RAG
+
+知识库包含 `knowledge/` 下 4 份中文 Markdown 政策。入库使用 600 字符 Chunk、80 字符 overlap、`text-embedding-v4` 1024 维向量，以及 Milvus `AUTOINDEX + COSINE`。
+
+显式执行入库：
+
+```bash
+uv run python scripts/ingest_knowledge.py
+```
+
+Collection `ecommerce_knowledge` 保存 `chunk_id`、`source`、`content` 和 `embedding`。检索返回 Top 3，并过滤低于 `KNOWLEDGE_MIN_SCORE` 的结果。无足够结果时 Knowledge Agent 明确说明没有依据，不调用 LLM 自由编造。
+
+运行真实 Dense Retrieval 与 Knowledge Agent smoke：
+
+```bash
+uv run python scripts/rag_smoke_test.py
+```
 
 所有 API 错误统一为：
 
@@ -270,6 +295,8 @@ docker compose up -d
 docker compose ps
 uv run python scripts/smoke_test.py
 uv run python scripts/tool_calling_smoke_test.py
+uv run python scripts/ingest_knowledge.py
+uv run python scripts/rag_smoke_test.py
 ```
 
 真实模型验收需要显式运行：
@@ -306,4 +333,4 @@ docker compose up -d --force-recreate
 
 ## 后续开发边界
 
-并行执行、Replanning、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。后续编排可直接复用当前 Router、Supervisor Plan、顺序推进、Agent Result 汇总、三个 Specialist 和 Tool Isolation。
+M9 可直接复用 Markdown Chunk、Embedding、Milvus Collection、Dense Search Result 和 Knowledge Agent，在检索层增加 Sparse Vector、BM25、融合与 Reranker；M8 不包含这些能力。

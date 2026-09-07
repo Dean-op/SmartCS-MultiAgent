@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from ecommerce_ai_agent.business_tools import TOOL_DEFINITIONS, BusinessTools
+from ecommerce_ai_agent.knowledge import KnowledgeBase
 from ecommerce_ai_agent.llm.client import BailianModel, ModelTurn
 from ecommerce_ai_agent.llm.errors import ModelProviderError
 from ecommerce_ai_agent.llm.schemas import (
@@ -15,17 +16,19 @@ from ecommerce_ai_agent.llm.schemas import (
 
 ROUTER_PROMPT = """将用户消息分类为且仅分类为一个 route：
 order：订单状态、订单商品或物流；refund：退款记录或退款进度；
-product：商品、SKU、价格或商品信息；general：问候或不需要业务数据的问题；
+product：商品、SKU、价格或商品信息；knowledge：退款、配送、售后、支付等企业政策；
+general：问候或不需要业务数据的问题；
 complex：必须由两个或更多 Specialist 顺序协作才能完成的问题。
+退款单进度属于 refund，退款规则属于 knowledge。
 简单请求不能选择 complex。不要回答用户问题。"""
 
 SUPERVISOR_PLAN_PROMPT = """为复杂请求生成最小顺序执行计划。
-steps 只能包含 order、refund、product，至少两个且不能重复。
+steps 只能包含 order、refund、product、knowledge，至少两个且不能重复。
 存在依赖时把提供信息的 Specialist 放在前面，例如先查订单再查关联退款。
 不要回答用户问题，也不要调用任何工具。"""
 
 SUPERVISOR_FINAL_PROMPT = """你是客服协调员。根据各 Specialist 的已验证结果，
-简洁汇总回答原始问题。不要补充结果中不存在的事实，不要声称执行写操作。"""
+简洁汇总回答原始问题并保留来源信息。不要补充结果中不存在的事实，不要声称执行写操作。"""
 
 CUSTOMER_SERVICE_SYSTEM_PROMPT = """你是一名简洁、诚实的电商客服。
 回答普通问题，但不要声称查询或修改了真实业务数据。"""
@@ -39,6 +42,9 @@ REFUND_AGENT_PROMPT = """你是退款查询客服，只处理当前用户已有�
 
 PRODUCT_AGENT_PROMPT = """你是商品查询客服，只处理 SKU、商品信息和价格问题。
 需要真实数据时只使用商品查询工具，只能根据工具结果回答，不得编造商品信息。"""
+
+KNOWLEDGE_AGENT_PROMPT = """你是企业政策知识库客服。
+只能根据提供的知识库片段回答；片段没有依据的内容不得猜测或补充。"""
 
 ORDER_TOOLS = [TOOL_DEFINITIONS[0]]
 PRODUCT_TOOLS = [TOOL_DEFINITIONS[1]]
@@ -90,12 +96,12 @@ def _active_specialist(state: ChatState) -> SpecialistRoute:
     route = state["route"]
     if route == "complex":
         return state["plan"][state["current_step"]]
-    if route in ("order", "refund", "product"):
+    if route in ("order", "refund", "product", "knowledge"):
         return route
     raise ModelProviderError
 
 
-def build_chat_workflow(model: BailianModel, tools: BusinessTools):
+def build_chat_workflow(model: BailianModel, tools: BusinessTools, knowledge: KnowledgeBase):
     async def router(state: ChatState) -> dict[str, RouteName]:
         decision = await model.generate_structured(
             ROUTER_PROMPT,
@@ -144,6 +150,20 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
             PRODUCT_TOOLS,
         )
         return {"messages": [_assistant_message(state, turn)]}
+
+    async def knowledge_agent(state: ChatState) -> ChatState:
+        results = await knowledge.search(_user_message(state))
+        if not results:
+            return {"messages": [{"role": "assistant", "content": "知识库中没有找到足够依据。"}]}
+        context = "\n\n".join(
+            f"[{result.source}#{result.chunk_id}]\n{result.content}" for result in results
+        )
+        answer = await model.generate_text(
+            KNOWLEDGE_AGENT_PROMPT,
+            f"问题：{_user_message(state)}\n\n知识库片段：\n{context}",
+        )
+        sources = "、".join(dict.fromkeys(result.source for result in results))
+        return {"messages": [{"role": "assistant", "content": f"{answer}\n\n来源：{sources}"}]}
 
     async def tool_node(state: ChatState) -> ChatState:
         match _active_specialist(state):
@@ -208,7 +228,7 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
 
     def route_to_active_specialist(
         state: ChatState,
-    ) -> Literal["order_agent", "refund_agent", "product_agent"]:
+    ) -> Literal["order_agent", "refund_agent", "product_agent", "knowledge_agent"]:
         match _active_specialist(state):
             case "order":
                 return "order_agent"
@@ -216,12 +236,20 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
                 return "refund_agent"
             case "product":
                 return "product_agent"
+            case "knowledge":
+                return "knowledge_agent"
             case _:
                 raise ModelProviderError
 
     def route_after_step(
         state: ChatState,
-    ) -> Literal["order_agent", "refund_agent", "product_agent", "supervisor_final"]:
+    ) -> Literal[
+        "order_agent",
+        "refund_agent",
+        "product_agent",
+        "knowledge_agent",
+        "supervisor_final",
+    ]:
         if state["current_step"] == len(state["plan"]):
             return "supervisor_final"
         return route_to_active_specialist(state)
@@ -231,6 +259,7 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
     builder.add_node("order_agent", order_agent)
     builder.add_node("refund_agent", refund_agent)
     builder.add_node("product_agent", product_agent)
+    builder.add_node("knowledge_agent", knowledge_agent)
     builder.add_node("general_agent", general_agent)
     builder.add_node("supervisor", supervisor)
     builder.add_node("supervisor_step", supervisor_step)
@@ -244,11 +273,12 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools):
             "order": "order_agent",
             "refund": "refund_agent",
             "product": "product_agent",
+            "knowledge": "knowledge_agent",
             "general": "general_agent",
             "complex": "supervisor",
         },
     )
-    for agent in ("order_agent", "refund_agent", "product_agent"):
+    for agent in ("order_agent", "refund_agent", "product_agent", "knowledge_agent"):
         builder.add_conditional_edges(agent, route_after_agent)
     builder.add_edge("general_agent", END)
     builder.add_conditional_edges("supervisor", route_to_active_specialist)
