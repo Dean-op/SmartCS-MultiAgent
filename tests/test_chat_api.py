@@ -9,12 +9,21 @@ from pydantic import SecretStr
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.health import HealthChecker
 from ecommerce_ai_agent.main import create_app
+from ecommerce_ai_agent.services.chat import ChatService
 
 Probe = Callable[[], Awaitable[None]]
 
 
 async def healthy_probe() -> None:
     return None
+
+
+class FakeModel:
+    async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+        return "来自 Fake Model 的回复"
+
+    async def close(self) -> None:
+        return None
 
 
 def build_test_app():
@@ -26,11 +35,15 @@ def build_test_app():
             "milvus": healthy_probe,
         }
     )
-    return create_app(settings=settings, health_checker=checker)
+    return create_app(
+        settings=settings,
+        health_checker=checker,
+        chat_service=ChatService(FakeModel()),
+    )
 
 
 @pytest.mark.asyncio
-async def test_chat_returns_stable_mock_response_with_server_conversation_id() -> None:
+async def test_chat_returns_stable_llm_response_with_server_conversation_id() -> None:
     transport = httpx.ASGITransport(app=build_test_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/v1/chat", json={"message": "我的订单什么时候到？"})
@@ -40,7 +53,7 @@ async def test_chat_returns_stable_mock_response_with_server_conversation_id() -
     assert set(payload) == {"conversation_id", "message", "status", "mode"}
     UUID(payload["conversation_id"])
     assert payload["status"] == "completed"
-    assert payload["mode"] == "mock"
+    assert payload["mode"] == "llm"
     assert set(payload["message"]) == {"id", "role", "content", "created_at"}
     UUID(payload["message"]["id"])
     assert payload["message"]["role"] == "assistant"
@@ -105,3 +118,23 @@ async def test_chat_rejects_malformed_json_without_echoing_request_body() -> Non
     payload = response.json()
     assert payload["error"]["code"] == "validation_error"
     assert malformed_body not in response.text
+
+
+@pytest.mark.asyncio
+async def test_chat_reports_missing_model_configuration_without_breaking_app() -> None:
+    settings = Settings(_env_file=None, postgres_password=SecretStr("test-password"))
+    checker = HealthChecker(
+        {"postgres": healthy_probe, "redis": healthy_probe, "milvus": healthy_probe}
+    )
+    application = create_app(settings=settings, health_checker=checker)
+    transport = httpx.ASGITransport(app=application)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/v1/chat", json={"message": "hello"})
+
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "model_not_configured",
+        "message": "The model provider is not configured",
+        "details": [],
+    }

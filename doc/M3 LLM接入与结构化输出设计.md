@@ -4,14 +4,14 @@
 
 - 项目：`ecommerce-ai-agent`
 - 里程碑：M3——LLM 接入与结构化输出
-- 状态：已确认，待实施
+- 状态：已实现并通过验收
 - 日期：2026-09-07
 
 ## 2. 目标与边界
 
-M3 将 M1 的 Mock Chat 替换为阿里云百炼 `qwen3.7-plus` 真实文本生成，并建立可被后续 Tool Calling、Agent、Router、Supervisor 和 RAG 复用的最小模型访问能力。
+M3 将 M1 的 Mock Chat 替换为阿里云百炼 `qwen3.8-27b` 真实文本生成，并建立可被后续 Tool Calling、Agent、Router、Supervisor 和 RAG 复用的最小模型访问能力。
 
-本阶段只实现普通文本生成、JSON Schema Structured Output、Provider 错误映射、必要日志、离线自动化测试和显式真实 Smoke Test。不实现 Tool Calling、Agent、LangGraph、正式 Router、Memory、Embedding 或 RAG。
+本阶段只实现普通文本生成、JSON Object + Pydantic Structured Output、Provider 错误映射、必要日志、离线自动化测试和显式真实 Smoke Test。不实现 Tool Calling、Agent、LangGraph、正式 Router、Memory、Embedding 或 RAG。
 
 ## 3. 方案选择
 
@@ -60,13 +60,13 @@ scripts/
 | --- | --- | --- |
 | `DASHSCOPE_API_KEY` | SecretStr，可选 | 调用模型时必填 |
 | `BAILIAN_BASE_URL` | HttpUrl，可选 | 调用模型时必填，必须与 Key 地域匹配 |
-| `LLM_MODEL` | str，可选 | 调用模型时必填，M3 使用 `qwen3.7-plus` |
+| `LLM_MODEL` | str，可选 | 调用模型时必填，M3 使用 `qwen3.8-27b` |
 | `LLM_TIMEOUT_SECONDS` | float | 默认 30，必须大于 0 |
 | `LLM_MAX_RETRIES` | int | 默认 2，范围 0～5 |
 | `LLM_TEMPERATURE` | float | 默认 0.2，范围 0～2 |
 | `LLM_MAX_COMPLETION_TOKENS` | int | 默认 800，范围 1～8192 |
 
-Key、Base URL 和 Model 不在业务代码中提供隐藏 fallback。`.env.example` 使用空 Key、官方共享 Base URL 示例和 `qwen3.7-plus`；真实专属 Host 只存在于未提交 `.env`。
+Key、Base URL 和 Model 不在业务代码中提供隐藏 fallback。`.env.example` 使用空 Key、官方共享 Base URL 示例和 `qwen3.8-27b`；真实专属 Host 只存在于未提交 `.env`。
 
 应用在缺少模型配置时仍可启动，M0 health 和 M2 migration 不依赖模型。只有 Chat 或显式模型调用会返回 `model_not_configured`。
 
@@ -81,9 +81,9 @@ generate_structured(system_prompt, user_prompt, schema_type[T]) -> T
 
 共同请求参数从 Settings 读取：model、temperature、`max_completion_tokens`、timeout 和 max retries。模型客户端在 FastAPI lifespan 结束时关闭。
 
-普通生成检查 `choices[0].message.content` 非空。Structured Output 使用 `response_format.type=json_schema`、`strict=true` 和 Pydantic `model_json_schema()`；返回内容依次经过 `json.loads` 和 Pydantic `model_validate`，最终得到 Typed Python Result。
+普通生成检查 `choices[0].message.content` 非空。Structured Output 使用 `response_format.type=json_object`，把 Pydantic `model_json_schema()` 放入 System Prompt；返回内容依次经过 `json.loads` 和 Pydantic `model_validate`，最终得到 Typed Python Result。
 
-Structured Output 请求显式关闭 thinking，以降低隐藏推理对严格 JSON 输出的干扰。不传 tools、tool_choice 或 Function Calling Schema。
+Structured Output 请求显式关闭 thinking，减少非 JSON 内容。不传 tools、tool_choice 或 Function Calling Schema。
 
 ## 7. Structured Output Schema
 
@@ -170,7 +170,7 @@ Provider 已完成重试后才映射为公开错误。Structured Output 解析�
 - 配置读取、范围校验和 Secret repr。
 - 缺少 Key/Base URL/Model 时的错误。
 - 普通生成请求参数与非空响应。
-- Structured Output 请求包含 strict JSON Schema。
+- Structured Output 请求使用 JSON Object，并在 Prompt 中包含 JSON Schema。
 - JSON → Pydantic Typed Result。
 - 无效 JSON 和 Schema 不匹配。
 - Authentication、Rate Limit、Timeout、Connection、Bad Request 和 Provider 异常映射。
@@ -190,9 +190,9 @@ uv run python scripts/llm_smoke_test.py
 
 脚本不被 pytest 收集，也不由普通 smoke 自动调用。它读取本地环境配置并依次验证：
 
-1. Key、Base URL、`qwen3.7-plus` 配置存在。
+1. Key、Base URL、`qwen3.8-27b` 配置存在。
 2. 普通文本生成返回非空内容。
-3. JSON Schema Structured Output 返回 `MessageAssessment` typed result。
+3. JSON Object 输出经 Pydantic Schema 校验后返回 `MessageAssessment` typed result。
 4. 输出仅包含模型名、文本长度、typed 字段与耗时，不打印 Key、Header、专属 Host 或完整模型内容。
 
 完成直接模型 smoke 后，使用已配置同一 `.env` 的 Docker API 调用 `/api/v1/chat`，验证真实 HTTP Chat 返回 `mode=llm`。
@@ -201,10 +201,7 @@ uv run python scripts/llm_smoke_test.py
 
 ## 15. 普通 Smoke 与 Docker
 
-现有 `scripts/smoke_test.py` 继续验证 M0 readiness、Swagger 和 validation，默认不强制真实模型调用：
-
-- 模型已配置：Chat 必须返回 200 和 `mode=llm`。
-- 模型未配置：Chat 允许返回 503 `model_not_configured`，其他 M0/M1 检查必须通过。
+现有 `scripts/smoke_test.py` 只验证 M0 readiness、Swagger 和 Chat validation，不调用真实模型。真实 Chat 统一由显式 `llm_smoke_test.py` 和最终 HTTP 验收负责，避免基础设施 smoke 受外部额度或计费状态影响。
 
 Compose 继续通过 `.env` 把模型环境变量传给 API，不新增服务。Docker Engine 未运行时，最终验收前启动 Docker Desktop 并等待六个服务 healthy。
 
@@ -217,8 +214,8 @@ M3 不实现 Tool Calling、Tool Schema、LangChain、LangGraph、Agent、Router
 只有以下条件全部满足才判定 M3 完成：
 
 1. uv 锁定 OpenAI SDK，配置集中且 Secret 未提交。
-2. Chat 外部字段保持稳定，真实内容来自 `qwen3.7-plus`，`mode=llm`。
-3. Structured Output 完成 JSON Schema → Validation → Typed Result。
+2. Chat 外部字段保持稳定，真实内容来自 `qwen3.8-27b`，`mode=llm`。
+3. Structured Output 完成 JSON Object → Pydantic Validation → Typed Result。
 4. Provider 错误全部映射到现有 Error Contract，不泄漏敏感信息。
 5. 默认 pytest 完全离线，并覆盖模型层、Chat、错误和 M0/M1/M2 回归。
 6. 显式真实 Smoke 验证普通生成和 Structured Output。
@@ -232,5 +229,5 @@ M3 不实现 Tool Calling、Tool Schema、LangChain、LangGraph、Agent、Router
 - 百炼 OpenAI-compatible API：<https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope>
 - 百炼地域 Base URL：<https://help.aliyun.com/en/model-studio/base-url>
 - 百炼 Structured Output：<https://help.aliyun.com/en/model-studio/qwen-structured-output>
-- `qwen3.7-plus`：<https://help.aliyun.com/zh/model-studio/qwen3-7-plus>
+- `qwen3.8-27b`：<https://help.aliyun.com/zh/model-studio/qwen3-8-27b>
 - OpenAI Python SDK 错误、重试和 timeout：<https://github.com/openai/openai-python>

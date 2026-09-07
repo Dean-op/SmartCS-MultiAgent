@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ecommerce_ai_agent.llm.errors import ModelError
 from ecommerce_ai_agent.schemas.error import ErrorBody, ErrorDetail, ErrorResponse
 
 logger = logging.getLogger(__name__)
@@ -106,8 +107,20 @@ async def unexpected_exception_handler(
     )
 
 
+async def model_exception_handler(
+    _request: Request,
+    exception: ModelError,
+) -> JSONResponse:
+    return build_error_response(
+        status_code=exception.status_code,
+        code=exception.code,
+        message=exception.public_message,
+    )
+
+
 def register_exception_handlers(application: FastAPI) -> None:
     application.add_exception_handler(RequestValidationError, validation_exception_handler)
     application.add_exception_handler(ApplicationError, application_exception_handler)
+    application.add_exception_handler(ModelError, model_exception_handler)
     application.add_exception_handler(StarletteHTTPException, http_exception_handler)
     application.add_exception_handler(Exception, unexpected_exception_handler)

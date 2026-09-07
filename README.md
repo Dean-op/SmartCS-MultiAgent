@@ -1,6 +1,6 @@
 # ecommerce-ai-agent
 
-面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M2：PostgreSQL 业务数据层**。
+面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M3：LLM 接入与结构化输出**。
 
 ## 当前能力
 
@@ -10,12 +10,13 @@
 - PostgreSQL、Redis、Milvus Standalone、etcd、MinIO 本地容器环境
 - 命名卷持久化、自动化单元测试和运行态 smoke test
 - `/api/v1` 版本化 API、稳定 Schema 和统一错误响应
-- 不依赖 LLM 的 Mock Chat API
+- 基于百炼 OpenAI-compatible API 和 `qwen3.8-27b` 的真实 Chat
+- JSON Object + Pydantic Structured Output
 - SQLAlchemy 2.x 异步数据访问、Alembic Migration 和幂等 Seed Data
 - User、Product、Order、OrderItem、Shipment、Refund、HumanReview 业务模型
 - 面向后续 Tool 的 Repository、Service 和只读 DTO 边界
 
-当前不包含 Agent、LLM、RAG、JWT、Authorization、Redis Session、Celery Worker、LangGraph、OpenTelemetry 或 Evaluation。
+当前不包含 Agent、Tool Calling、RAG、JWT、Authorization、Redis Session、Celery Worker、LangGraph、OpenTelemetry 或 Evaluation。
 
 ## 环境要求
 
@@ -40,6 +41,20 @@ cp .env.example .env
 ```
 
 `.env` 不会进入 Git。示例密码只适用于本地开发；共享环境或生产环境必须替换。
+
+真实模型调用还需要配置：
+
+```text
+DASHSCOPE_API_KEY=
+BAILIAN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=qwen3.8-27b
+LLM_TIMEOUT_SECONDS=30
+LLM_MAX_RETRIES=2
+LLM_TEMPERATURE=0.2
+LLM_MAX_COMPLETION_TOKENS=800
+```
+
+Base URL 必须与 Key 所属地域和业务空间匹配。Key 缺失时应用与 health 仍可启动，但 Chat 返回 `503 model_not_configured`。
 
 在 Docker Compose 中，API 使用 `postgres`、`redis`、`milvus` 等 Service Name 访问依赖。`.env` 中的 `localhost` 默认值用于在宿主机直接运行 API。
 
@@ -126,7 +141,9 @@ curl -X POST http://localhost:8000/api/v1/chat \
 - `conversation_id`：可选 UUID，只作为会话关联标识，不代表可信用户身份。
 - 不允许额外字段；身份认证将在后续里程碑实现。
 
-当前返回 Mock assistant message，不调用模型或外部服务。客户端可在下一次请求中回传 `conversation_id`，但 M1 不保存会话状态。
+当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。客户端可在下一次请求中回传 `conversation_id`，但 M3 仍不保存会话状态。
+
+模型当前没有业务 Tool，因此不会声称已查询真实订单、修改数据库或创建退款。涉及真实业务操作时只提供一般指引。
 
 所有 API 错误统一为：
 
@@ -147,6 +164,18 @@ curl -X POST http://localhost:8000/api/v1/chat \
 ```
 
 Swagger UI：<http://localhost:8000/docs>，OpenAPI Schema：<http://localhost:8000/openapi.json>。
+
+## LLM 与 Structured Output 验证
+
+默认 pytest 使用 Fake SDK，不调用外部模型。显式执行真实百炼验证：
+
+```bash
+uv run python scripts/llm_smoke_test.py
+```
+
+该脚本依次验证普通文本生成和 `MessageAssessment` Structured Output。结构化输出使用 JSON Object 模式，提示词给出 JSON Schema，再由 Pydantic 校验为 typed result。脚本只输出模型名、字符数量、类型和耗时，不打印 Key、Endpoint、Prompt 或完整回复。真实调用会消耗额度。
+
+Provider 错误复用现有 API Error Contract，区分未配置、鉴权失败、限流/额度、timeout、连接失败、Structured Output 无效和其他 Provider 错误。客户端不会收到 SDK traceback、Key、Authorization Header 或 Provider 原始错误正文。
 
 ## PostgreSQL 业务数据
 
@@ -214,6 +243,12 @@ docker compose ps
 uv run python scripts/smoke_test.py
 ```
 
+真实模型验收需要显式运行：
+
+```bash
+uv run python scripts/llm_smoke_test.py
+```
+
 ## 常见问题
 
 ### 端口已被占用
@@ -236,6 +271,10 @@ uv run python scripts/smoke_test.py
 docker compose up -d --force-recreate
 ```
 
+### Chat 返回 provider_rate_limited
+
+检查百炼模型额度、限流和“免费额度用完即停”设置。普通基础设施 smoke 不调用真实模型，可独立验证 Docker 与 API 基础状态。
+
 ## 后续开发边界
 
-Agent、LangGraph、Tool Calling、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。M2 Service 是未来 Tool 访问业务数据的唯一入口，M1 Chat Service 仍是后续 LangGraph Workflow 的替换边界。
+Agent、LangGraph、Tool Calling、RAG、Celery 和可观测性将在后续里程碑中按设计方案逐步加入。M4 可直接复用 `BailianModel` 的客户端配置、请求生命周期、错误映射和日志字段；M2 Service 仍是 Tool 访问业务数据的唯一入口。

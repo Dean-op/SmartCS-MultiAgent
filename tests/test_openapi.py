@@ -37,7 +37,7 @@ async def test_openapi_describes_versioned_chat_contract_and_error_responses() -
     schema = response.json()
     assert schema["info"]["title"] == "ecommerce-ai-agent"
     assert schema["info"]["version"] == "0.1.0"
-    assert "M1" in schema["info"]["description"]
+    assert "M3" in schema["info"]["description"]
 
     operation = schema["paths"]["/api/v1/chat"]["post"]
     assert operation["requestBody"]["content"]["application/json"]["schema"] == {
@@ -46,13 +46,15 @@ async def test_openapi_describes_versioned_chat_contract_and_error_responses() -
     assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ChatResponse"
     }
-    for status_code in ("400", "422", "500"):
+    for status_code in ("400", "422", "500", "502", "503", "504"):
         assert operation["responses"][status_code]["content"]["application/json"]["schema"] == {
             "$ref": "#/components/schemas/ErrorResponse"
         }
 
     request_properties = schema["components"]["schemas"]["ChatRequest"]["properties"]
     assert set(request_properties) == {"message", "conversation_id"}
+    mode_schema = schema["components"]["schemas"]["ChatResponse"]["properties"]["mode"]
+    assert mode_schema["const"] == "llm"
 
 
 @pytest.mark.asyncio

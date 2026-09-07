@@ -2,7 +2,16 @@ import json
 import logging
 from datetime import UTC, datetime
 
-CONTEXT_FIELDS = ("environment", "dependency", "error_type")
+CONTEXT_FIELDS = (
+    "environment",
+    "dependency",
+    "provider",
+    "model",
+    "operation",
+    "latency_ms",
+    "outcome",
+    "error_type",
+)
 
 
 class JsonFormatter(logging.Formatter):
@@ -24,7 +33,12 @@ def configure_logging(level: str) -> None:
     handler.setFormatter(JsonFormatter())
 
     root_logger = logging.getLogger()
-    root_logger.handlers.clear()
+    root_logger.handlers[:] = [
+        existing
+        for existing in root_logger.handlers
+        if not isinstance(existing.formatter, JsonFormatter)
+    ]
     root_logger.addHandler(handler)
     root_logger.setLevel(level.upper())
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)

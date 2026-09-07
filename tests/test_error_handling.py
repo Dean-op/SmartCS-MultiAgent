@@ -5,7 +5,9 @@ from pydantic import SecretStr
 from ecommerce_ai_agent.api.errors import ApplicationError
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.health import HealthChecker
+from ecommerce_ai_agent.llm.errors import ModelTimeoutError
 from ecommerce_ai_agent.main import create_app
+from ecommerce_ai_agent.services.chat import ChatService
 
 
 async def healthy_probe() -> None:
@@ -95,3 +97,26 @@ async def test_unexpected_error_returns_generic_response_without_internal_detail
         }
     }
     assert "internal-sensitive-detail" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_model_error_uses_existing_error_contract() -> None:
+    class TimeoutModel:
+        async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+            raise ModelTimeoutError
+
+        async def close(self) -> None:
+            return None
+
+    application = build_test_app()
+    application.state.chat_service = ChatService(TimeoutModel())
+    transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/v1/chat", json={"message": "hello"})
+
+    assert response.status_code == 504
+    assert response.json()["error"] == {
+        "code": "provider_timeout",
+        "message": "The model provider timed out",
+        "details": [],
+    }

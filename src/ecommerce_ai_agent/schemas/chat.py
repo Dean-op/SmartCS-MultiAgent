@@ -31,4 +31,4 @@ class ChatResponse(BaseModel):
     conversation_id: UUID
     message: AssistantMessage
     status: Literal["completed"] = "completed"
-    mode: Literal["mock"] = "mock"
+    mode: Literal["llm"] = "llm"

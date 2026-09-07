@@ -1,4 +1,4 @@
-from pydantic import SecretStr
+from pydantic import AnyHttpUrl, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,3 +30,11 @@ class Settings(BaseSettings):
     milvus_management_port: int = 9091
 
     healthcheck_timeout_seconds: float = 3.0
+
+    dashscope_api_key: SecretStr | None = None
+    bailian_base_url: AnyHttpUrl | None = None
+    llm_model: str | None = Field(default=None, min_length=1)
+    llm_timeout_seconds: float = Field(default=30.0, gt=0)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
+    llm_temperature: float = Field(default=0.2, ge=0, le=2)
+    llm_max_completion_tokens: int = Field(default=800, ge=1, le=8192)
