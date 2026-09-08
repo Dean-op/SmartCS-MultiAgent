@@ -51,7 +51,7 @@ def create_app(
             await checkpointer.setup()
             service = ChatService(
                 model,
-                BusinessTools(database.session_factory),
+                BusinessTools(database.session_factory, settings),
                 KnowledgeBase(settings, model),
                 checkpointer=checkpointer,
             )
@@ -78,6 +78,7 @@ def create_app(
         openapi_tags=[
             {"name": "health", "description": "Application and dependency health"},
             {"name": "chat", "description": "Versioned chat API"},
+            {"name": "reviews", "description": "Admin refund review API"},
         ],
     )
     application.state.chat_service = chat_service

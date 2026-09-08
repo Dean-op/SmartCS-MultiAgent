@@ -41,6 +41,7 @@ class Refund(TimestampMixin, Base):
 
     id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
     refund_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_key: Mapped[str | None] = mapped_column(String(64), unique=True)
     order_id: Mapped[UUID] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("orders.id", ondelete="RESTRICT"),
@@ -77,6 +78,7 @@ class HumanReview(TimestampMixin, Base):
         PgUUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
     )
+    thread_id: Mapped[str | None] = mapped_column(String(80), index=True)
     status: Mapped[ReviewStatus] = mapped_column(
         database_enum(ReviewStatus, "review_status"),
         nullable=False,

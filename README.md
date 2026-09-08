@@ -263,6 +263,27 @@ uv run python scripts/tool_calling_smoke_test.py
 
 Provider 错误复用现有 API Error Contract，区分未配置、鉴权失败、限流/额度、timeout、连接失败、Structured Output 无效和其他 Provider 错误。客户端不会收到 SDK traceback、Key、Authorization Header 或 Provider 原始错误正文。
 
+## 登录与退款审核
+
+开发 Seed 提供 `alice@example.com / customer-password` 与
+`admin@example.com / admin-password`。登录后将返回的 JWT 放入
+`Authorization: Bearer <token>`；订单和退款 Tool 始终使用该可信用户身份。
+
+退款申请继续通过 `/api/v1/chat` 发起。金额不超过 100 元且近 30 天有效退款少于
+2 次时自动完成；其余合格请求返回 `pending_review`。管理员可使用：
+
+```text
+GET  /api/v1/reviews/pending
+POST /api/v1/reviews/{review_id}/approve
+POST /api/v1/reviews/{review_id}/reject
+```
+
+审批接口会恢复原 LangGraph Thread。显式真实模型退款验证会写入开发数据库：
+
+```bash
+uv run python scripts/refund_smoke_test.py
+```
+
 ## PostgreSQL 业务数据
 
 业务 Schema 只通过 Alembic 管理，应用启动不会调用 `create_all`。升级到最新版本：
@@ -330,6 +351,7 @@ uv run python scripts/smoke_test.py
 uv run python scripts/tool_calling_smoke_test.py
 uv run python scripts/ingest_knowledge.py
 uv run python scripts/rag_smoke_test.py
+uv run python scripts/refund_smoke_test.py
 ```
 
 真实模型验收需要显式运行：

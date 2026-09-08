@@ -64,6 +64,7 @@ class HumanReviewData(ServiceData):
     priority: ReviewPriority
     reviewer_note: str | None
     reviewed_at: datetime | None
+    thread_id: str | None
 
 
 class RefundData(ServiceData):

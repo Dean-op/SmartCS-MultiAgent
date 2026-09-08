@@ -14,6 +14,7 @@ def test_tool_schemas_never_allow_the_model_to_supply_user_identity() -> None:
         "get_current_user_order",
         "get_product_by_sku",
         "get_current_user_refund",
+        "request_refund",
     }
     for function in schemas.values():
         parameters = function["parameters"]

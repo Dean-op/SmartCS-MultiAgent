@@ -1,8 +1,11 @@
+import json
 from operator import add
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from uuid import UUID
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from ecommerce_ai_agent.business_tools import TOOL_DEFINITIONS, BusinessTools
 from ecommerce_ai_agent.knowledge import KnowledgeBase
@@ -38,9 +41,10 @@ ORDER_AGENT_PROMPT = """你是订单查询客服，只处理当前用户的订�
 每次用户询问订单当前状态时，只要消息或历史中有订单号，就必须调用订单查询工具刷新。
 只能根据工具结果回答，不得编造或执行写操作。"""
 
-REFUND_AGENT_PROMPT = """你是退款查询客服，只处理当前用户已有退款记录和进度问题。
+REFUND_AGENT_PROMPT = """你是退款客服，处理退款查询和退款申请。
+用户明确要求退款时，提取订单号、可选金额和原因，并调用 request_refund。
 只要用户消息或前序结果中有退款单号，就必须使用退款查询工具确认最新状态。
-只能根据工具结果回答，不得创建或修改退款。"""
+资格、合法金额、风险和审批完全由工具决定，不得自行判断或绕过人工审核。"""
 
 PRODUCT_AGENT_PROMPT = """你是商品查询客服，只处理 SKU、商品信息和价格问题。
 需要真实数据时只使用商品查询工具，只能根据工具结果回答，不得编造商品信息。"""
@@ -50,7 +54,7 @@ KNOWLEDGE_AGENT_PROMPT = """你是企业政策知识库客服。
 
 ORDER_TOOLS = [TOOL_DEFINITIONS[0]]
 PRODUCT_TOOLS = [TOOL_DEFINITIONS[1]]
-REFUND_TOOLS = [TOOL_DEFINITIONS[2]]
+REFUND_TOOLS = [TOOL_DEFINITIONS[2], TOOL_DEFINITIONS[3]]
 
 
 class ChatState(TypedDict):
@@ -61,6 +65,7 @@ class ChatState(TypedDict):
     agent_results: NotRequired[dict[SpecialistRoute, str]]
     tool_used: NotRequired[bool]
     user_id: NotRequired[str]
+    pending_review: NotRequired[dict[str, str] | None]
 
 
 def _user_message(state: ChatState) -> str:
@@ -180,34 +185,72 @@ def build_chat_workflow(
         sources = "、".join(dict.fromkeys(result.source for result in results))
         return {"messages": [{"role": "assistant", "content": f"{answer}\n\n来源：{sources}"}]}
 
-    async def tool_node(state: ChatState) -> ChatState:
+    async def tool_node(state: ChatState, config: RunnableConfig) -> ChatState:
         match _active_specialist(state):
             case "order":
-                allowed_tool = "get_current_user_order"
+                allowed_tools = {"get_current_user_order"}
             case "refund":
-                allowed_tool = "get_current_user_refund"
+                allowed_tools = {"get_current_user_refund", "request_refund"}
             case "product":
-                allowed_tool = "get_product_by_sku"
+                allowed_tools = {"get_product_by_sku"}
             case _:
                 raise ModelProviderError
 
         calls = state["messages"][-1]["tool_calls"]
-        if any(call["function"]["name"] != allowed_tool for call in calls):
+        if any(call["function"]["name"] not in allowed_tools for call in calls):
+            raise ModelProviderError
+        messages = []
+        pending_review = None
+        for call in calls:
+            name = call["function"]["name"]
+            if name == "request_refund":
+                content = await tools.request_refund(
+                    call["function"]["arguments"],
+                    UUID(state["user_id"]),
+                    config["configurable"]["thread_id"],
+                )
+                payload = json.loads(content)
+                if payload.get("outcome") == "pending_review":
+                    pending_review = {
+                        "review_id": payload["review_id"],
+                        "refund_number": payload["refund_number"],
+                        "thread_id": payload["thread_id"],
+                    }
+            else:
+                content = await tools.run(
+                    name,
+                    call["function"]["arguments"],
+                    UUID(state["user_id"]),
+                )
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
+        return {
+            "messages": messages,
+            "tool_used": True,
+            "pending_review": pending_review,
+        }
+
+    async def human_review(state: ChatState) -> ChatState:
+        pending = state["pending_review"]
+        if not pending:
+            raise ModelProviderError
+        decision = interrupt(pending)
+        approve = decision["decision"] == "approve"
+        result = await tools.resolve_refund_review(
+            UUID(pending["review_id"]),
+            approve,
+            UUID(decision["reviewer_id"]),
+            decision.get("note"),
+        )
+        resolved = json.loads(result)
+        if resolved.get("outcome") == "approved":
+            content = f"退款 {resolved['refund_number']} 已通过人工审核并完成。"
+        elif resolved.get("outcome") == "rejected":
+            content = f"退款 {resolved['refund_number']} 未通过人工审核，未执行退款。"
+        else:
             raise ModelProviderError
         return {
-            "messages": [
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": await tools.run(
-                        call["function"]["name"],
-                        call["function"]["arguments"],
-                        UUID(state["user_id"]),
-                    ),
-                }
-                for call in calls
-            ],
-            "tool_used": True,
+            "messages": [{"role": "assistant", "content": content}],
+            "pending_review": None,
         }
 
     async def supervisor_step(state: ChatState) -> ChatState:
@@ -257,6 +300,19 @@ def build_chat_workflow(
             case _:
                 raise ModelProviderError
 
+    def route_after_tools_or_review(
+        state: ChatState,
+    ) -> Literal[
+        "human_review",
+        "order_agent",
+        "refund_agent",
+        "product_agent",
+        "knowledge_agent",
+    ]:
+        if state.get("pending_review"):
+            return "human_review"
+        return route_to_active_specialist(state)
+
     def route_after_step(
         state: ChatState,
     ) -> Literal[
@@ -281,6 +337,7 @@ def build_chat_workflow(
     builder.add_node("supervisor_step", supervisor_step)
     builder.add_node("supervisor_final", supervisor_final)
     builder.add_node("tools", tool_node)
+    builder.add_node("human_review", human_review)
     builder.add_edge(START, "router")
     builder.add_conditional_edges(
         "router",
@@ -298,7 +355,8 @@ def build_chat_workflow(
         builder.add_conditional_edges(agent, route_after_agent)
     builder.add_edge("general_agent", END)
     builder.add_conditional_edges("supervisor", route_to_active_specialist)
-    builder.add_conditional_edges("tools", route_to_active_specialist)
+    builder.add_conditional_edges("tools", route_after_tools_or_review)
     builder.add_conditional_edges("supervisor_step", route_after_step)
     builder.add_edge("supervisor_final", END)
+    builder.add_edge("human_review", END)
     return builder.compile(checkpointer=checkpointer)

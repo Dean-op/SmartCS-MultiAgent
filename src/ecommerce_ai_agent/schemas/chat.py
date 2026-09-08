@@ -30,5 +30,5 @@ class AssistantMessage(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: UUID
     message: AssistantMessage
-    status: Literal["completed"] = "completed"
+    status: Literal["completed", "pending_review"] = "completed"
     mode: Literal["llm"] = "llm"

@@ -1,11 +1,14 @@
 import json
 import logging
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.services.catalog import CatalogService
 from ecommerce_ai_agent.services.order import OrderService
 from ecommerce_ai_agent.services.refund import RefundService
@@ -29,6 +32,14 @@ class RefundArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     refund_number: str = Field(min_length=1, max_length=32)
+
+
+class RefundRequestArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    order_number: str = Field(min_length=1, max_length=32)
+    amount: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+    reason: str = Field(min_length=2, max_length=500)
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -56,6 +67,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "parameters": RefundArguments.model_json_schema(),
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "request_refund",
+            "description": "为当前登录用户的订单申请退款。金额可省略，由系统计算合法剩余金额。",
+            "parameters": RefundRequestArguments.model_json_schema(),
+        },
+    },
 ]
 
 
@@ -63,8 +82,10 @@ class BusinessTools:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
+        settings: Settings | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._settings = settings
 
     async def run(self, name: str, arguments: str, user_id: UUID) -> str:
         try:
@@ -86,6 +107,53 @@ class BusinessTools:
 
         logger.info("Business tool executed", extra={"tool_name": name})
         return self._json(result)
+
+    async def request_refund(self, arguments: str, user_id: UUID, thread_id: str) -> str:
+        try:
+            parsed = RefundRequestArguments.model_validate_json(arguments)
+        except ValidationError:
+            return self._json({"outcome": "rejected", "code": "invalid_arguments"})
+        settings = self._settings
+        async with self._session_factory.begin() as session:
+            result = await RefundService(session).request_refund(
+                user_id=user_id,
+                order_number=parsed.order_number,
+                amount=parsed.amount,
+                reason=parsed.reason,
+                thread_id=thread_id,
+                now=datetime.now(UTC),
+                window_days=settings.refund_window_days if settings else 30,
+                auto_max=settings.refund_auto_approve_max_amount if settings else Decimal("100.00"),
+                recent_days=settings.refund_recent_count_days if settings else 30,
+                recent_limit=settings.refund_recent_count_limit if settings else 2,
+            )
+        return self._json(
+            {
+                "outcome": result.outcome,
+                "code": result.code,
+                "refund_number": result.refund_number,
+                "amount": str(result.amount) if result.amount is not None else None,
+                "review_id": str(result.review_id) if result.review_id else None,
+                "thread_id": thread_id,
+            }
+        )
+
+    async def resolve_refund_review(
+        self,
+        review_id: UUID,
+        approve: bool,
+        reviewer_id: UUID,
+        note: str | None,
+    ) -> str:
+        async with self._session_factory.begin() as session:
+            result = await RefundService(session).resolve_review(
+                review_id,
+                approve=approve,
+                reviewer_id=reviewer_id,
+                note=note,
+                now=datetime.now(UTC),
+            )
+        return self._json({"outcome": result.outcome, "refund_number": result.refund_number})
 
     async def _order(
         self, session: AsyncSession, user_id: UUID, order_number: str

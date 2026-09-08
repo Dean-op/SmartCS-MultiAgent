@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic import AnyHttpUrl, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -34,6 +36,10 @@ class Settings(BaseSettings):
     jwt_secret: SecretStr | None = None
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = Field(default=60, ge=1, le=1440)
+    refund_window_days: int = Field(default=30, ge=1, le=365)
+    refund_auto_approve_max_amount: Decimal = Field(default=Decimal("100.00"), gt=0)
+    refund_recent_count_days: int = Field(default=30, ge=1, le=365)
+    refund_recent_count_limit: int = Field(default=2, ge=1, le=20)
 
     dashscope_api_key: SecretStr | None = None
     bailian_base_url: AnyHttpUrl | None = None

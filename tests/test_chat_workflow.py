@@ -302,25 +302,28 @@ async def test_complex_order_knowledge_runs_existing_order_agent_then_dense_rag(
 
 
 @pytest.mark.parametrize(
-    ("route", "agent_node", "tool_name", "arguments"),
+    ("route", "agent_node", "tool_name", "arguments", "available_tools"),
     [
         (
             "order",
             "order_agent",
             "get_current_user_order",
             '{"order_number":"EC2026080016"}',
+            ["get_current_user_order"],
         ),
         (
             "refund",
             "refund_agent",
             "get_current_user_refund",
             '{"refund_number":"RF2026080001"}',
+            ["get_current_user_refund", "request_refund"],
         ),
         (
             "product",
             "product_agent",
             "get_product_by_sku",
             '{"sku":"ELEC-HUB-001"}',
+            ["get_product_by_sku"],
         ),
     ],
 )
@@ -330,6 +333,7 @@ async def test_specialist_route_exposes_only_its_tool_and_returns_through_same_a
     agent_node: str,
     tool_name: str,
     arguments: str,
+    available_tools: list[str],
 ) -> None:
     call = ToolCall(id="call-1", name=tool_name, arguments=arguments)
     model = ScriptedModel(
@@ -345,7 +349,7 @@ async def test_specialist_route_exposes_only_its_tool_and_returns_through_same_a
     assert path == ["router", agent_node, "tools", agent_node]
     assert tools.calls == [(tool_name, arguments)]
     for definitions in model.turn_tools:
-        assert [tool["function"]["name"] for tool in definitions] == [tool_name]
+        assert [tool["function"]["name"] for tool in definitions] == available_tools
 
 
 @pytest.mark.parametrize(
