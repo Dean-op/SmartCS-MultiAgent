@@ -61,23 +61,23 @@ def run_smoke_test(base_url: str, wait_seconds: float) -> None:
             if docs_status != 200 or "Swagger UI" not in docs_body:
                 raise RuntimeError(f"Swagger UI is unavailable: {docs_status}")
 
-            invalid_status, invalid_payload = fetch_json(
+            unauthenticated_status, unauthenticated_payload = fetch_json(
                 f"{base_url}/api/v1/chat",
                 method="POST",
-                payload={"message": "   "},
+                payload={"message": "你好"},
             )
-            if invalid_status != 422:
-                raise RuntimeError(f"invalid chat input was accepted: {invalid_status}")
-            if invalid_payload.get("error", {}).get("code") != "validation_error":
-                raise RuntimeError(f"unexpected validation error: {invalid_payload}")
+            if unauthenticated_status != 401:
+                raise RuntimeError(f"unauthenticated chat was accepted: {unauthenticated_status}")
+            if unauthenticated_payload.get("error", {}).get("code") != "http_error":
+                raise RuntimeError(f"unexpected authentication error: {unauthenticated_payload}")
 
-            print("M10 base smoke passed: dependencies, Swagger, and Chat validation are ready.")
+            print("M15 base smoke passed: dependencies, Swagger, and Chat auth are ready.")
             return
         except (OSError, ValueError, RuntimeError, urllib.error.HTTPError) as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             time.sleep(2)
 
-    raise RuntimeError(f"M0 smoke test timed out after {wait_seconds}s; last error: {last_error}")
+    raise RuntimeError(f"Base smoke timed out after {wait_seconds}s; last error: {last_error}")
 
 
 def parse_args() -> argparse.Namespace:

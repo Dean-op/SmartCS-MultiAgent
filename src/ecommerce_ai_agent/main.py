@@ -81,12 +81,13 @@ def create_app(
     application = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        description="M10 persistent conversation API for the e-commerce AI Agent system.",
+        description="M15 complete e-commerce Multi-Agent learning project API.",
         lifespan=lifespan,
         docs_url="/docs",
         openapi_url="/openapi.json",
         openapi_tags=[
             {"name": "health", "description": "Application and dependency health"},
+            {"name": "auth", "description": "Development login and JWT access token"},
             {"name": "chat", "description": "Versioned chat API"},
             {"name": "reviews", "description": "Admin refund review API"},
         ],

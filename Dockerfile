@@ -22,6 +22,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
 COPY src ./src
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY scripts/seed_data.py ./scripts/seed_data.py
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev \
@@ -31,4 +34,4 @@ USER app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "ecommerce_ai_agent.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "alembic upgrade head && python scripts/seed_data.py && exec uvicorn ecommerce_ai_agent.main:create_app --factory --host 0.0.0.0 --port 8000"]

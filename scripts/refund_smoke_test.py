@@ -46,6 +46,21 @@ async def run() -> int:
         async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
             await checkpointer.setup()
             service = ChatService(model, tools, knowledge, checkpointer=checkpointer)
+            async with database.session_factory() as session:
+                pending_reviews = await RefundService(session).list_pending_reviews()
+            pending = next(
+                (review for review in pending_reviews if review.thread_id == thread_id),
+                None,
+            )
+            if pending is not None:
+                await service.resume_review(
+                    thread_id,
+                    CONVERSATION_ID,
+                    "approve",
+                    admin_id,
+                    "M11 repeat-safe smoke cleanup",
+                )
+            await checkpointer.adelete_thread(thread_id)
             response = await service.respond(
                 ChatRequest(
                     message=(

@@ -1,28 +1,110 @@
 # ecommerce-ai-agent
 
-面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M10：Conversation Memory + LangGraph Persistence**。
+一个从第一性原理逐步构建的电商 Multi-Agent 智能客服学习项目。当前已完成 M0～M15：真实模型、业务 Tool、LangGraph 编排、混合 RAG、多轮持久化、退款 Human-in-the-loop、JWT、Agent Evaluation 和最小 Observability 均已形成可运行闭环。
 
-## 当前能力
+## 系统能力
 
-- `uv` 管理的 Python 3.12+ `src` 布局项目
-- 最小 FastAPI 应用
-- API liveness 与依赖 readiness 健康检查
-- PostgreSQL、Redis、Milvus Standalone、etcd、MinIO 本地容器环境
-- 命名卷持久化、自动化单元测试和运行态 smoke test
-- `/api/v1` 版本化 API、稳定 Schema 和统一错误响应
-- 基于百炼 OpenAI-compatible API 和 `qwen3.8-27b` 的真实 Chat
-- JSON Object + Pydantic Structured Output
-- 订单、商品、退款三个只读 Tool 与最小 Tool Calling 循环
-- Structured Router、三个 Specialist 节点与隔离的 Tool 访问
-- Structured Supervisor Plan 与 Specialist 顺序协作、结果汇总
-- `text-embedding-v4` + Milvus Dense Retrieval + Knowledge Agent
-- Milvus BM25、Dense+BM25 RRF 与百炼 `qwen3-rerank`
-- LangGraph `AsyncPostgresSaver` 持久化多轮 Conversation State
-- SQLAlchemy 2.x 异步数据访问、Alembic Migration 和幂等 Seed Data
-- User、Product、Order、OrderItem、Shipment、Refund、HumanReview 业务模型
-- 面向后续 Tool 的 Repository、Service 和只读 DTO 边界
+- FastAPI `/api/v1`、统一错误响应、OpenAPI 与健康检查
+- PostgreSQL 业务模型、SQLAlchemy Async、Alembic 与幂等 Seed
+- 阿里云百炼 OpenAI-compatible API：`qwen3.8-27b`
+- LangGraph Router、Supervisor、Order/Refund/Product/Knowledge Specialist
+- 四个业务 Tool：订单、商品、退款查询与退款申请
+- Milvus Dense + BM25 + RRF + `qwen3-rerank`
+- PostgreSQL `AsyncPostgresSaver` 多轮会话状态
+- 确定性退款资格/风控、`interrupt/resume` 人工审核
+- HS256 JWT、customer/admin 最小角色边界
+- 20 条 Agent Evaluation 与 12 条 Retrieval Evaluation
+- OpenTelemetry 手动 Trace、路径、Latency、Token、调用次数、Error 与成本估算
 
-当前不包含长期记忆、摘要、消息裁剪、JWT、Redis Conversation、完整 Agent Evaluation 或 Observability。
+项目刻意不包含 Kubernetes、微服务、OAuth、Refresh Token、复杂 RBAC、消息队列、长期记忆、生产监控平台或支付网关。
+
+## 系统架构
+
+```mermaid
+flowchart LR
+    Client["HTTP Client / Demo"] --> API["FastAPI /api/v1"]
+    API --> Auth["JWT current_user"]
+    API --> Chat["ChatService"]
+    Chat --> Graph["LangGraph Workflow"]
+    Graph --> LLM["百炼 qwen3.8-27b"]
+    Graph --> Tools["BusinessTools"]
+    Tools --> Services["M2 Services"]
+    Services --> PG[("PostgreSQL")]
+    Graph --> KB["KnowledgeBase"]
+    KB --> Milvus[("Milvus")]
+    KB --> Embed["text-embedding-v4 / qwen3-rerank"]
+    Graph -. "checkpoint" .-> PG
+    API -. "Trace / summary" .-> OTel["OpenTelemetry Console"]
+    Redis[("Redis")]
+```
+
+Redis 保留为基础设施学习组件，当前不承载 Conversation Memory。
+
+## Multi-Agent Workflow
+
+```mermaid
+flowchart TD
+    Start(["START"]) --> Router["Structured Router"]
+    Router -->|general| General["General Agent"]
+    Router -->|order| Order["Order Agent"]
+    Router -->|refund| Refund["Refund Agent"]
+    Router -->|product| Product["Product Agent"]
+    Router -->|knowledge| Knowledge["Knowledge Agent"]
+    Router -->|complex| Supervisor["Supervisor Plan"]
+    Supervisor --> Specialist["按计划顺序选择 Specialist"]
+    Specialist --> ToolDecision{"需要 Tool?"}
+    ToolDecision -->|是| Tool["隔离的业务 Tool"]
+    Tool --> Specialist
+    ToolDecision -->|否| Next{"还有步骤?"}
+    Next -->|是| Specialist
+    Next -->|否| Final["Supervisor Final"]
+    General --> End(["END"])
+    Order --> ToolDecision
+    Refund --> ToolDecision
+    Product --> ToolDecision
+    Knowledge --> Next
+    Final --> End
+```
+
+Tool Isolation：Order 只能查订单；Product 只能查 SKU；Refund 只能查退款或申请退款；Knowledge 不持有业务 Tool。
+
+## RAG 流程
+
+```mermaid
+flowchart LR
+    Docs["8 个 Markdown / 24 Chunks"] --> Chunk["600 字符 / overlap 80"]
+    Chunk --> Dense["text-embedding-v4 / 1024 维"]
+    Chunk --> Sparse["Milvus BM25"]
+    Dense --> Store[("ecommerce_knowledge")]
+    Sparse --> Store
+    Question["用户问题"] --> DS["Dense Top-10"]
+    Question --> BS["BM25 Top-10"]
+    Store --> DS
+    Store --> BS
+    DS --> RRF["RRF k=60"]
+    BS --> RRF
+    RRF --> Rerank["qwen3-rerank"]
+    Rerank --> TopK["Top-3 Grounding Chunks"]
+    TopK --> Answer["Knowledge Agent + Sources"]
+```
+
+## 退款 Human-in-the-loop
+
+```mermaid
+flowchart TD
+    Intent["Refund Agent 提取订单号/金额/原因"] --> Request["request_refund Tool"]
+    Request --> Eligibility{"确定性资格检查"}
+    Eligibility -->|不合格| Reject["返回拒绝原因"]
+    Eligibility -->|合格| Risk{"确定性风险规则"}
+    Risk -->|低风险| Auto["创建并完成 Refund"]
+    Risk -->|需审核| Review["创建 Refund + HumanReview"]
+    Review --> Interrupt["LangGraph interrupt / PostgreSQL checkpoint"]
+    Interrupt --> Admin{"Admin Review API"}
+    Admin -->|approve| ResumeA["Command resume / 完成退款"]
+    Admin -->|reject| ResumeR["Command resume / 不执行退款"]
+```
+
+LLM 不决定退款资格、金额、风险或审批结果；这些均由 Python 规则与数据库约束执行。
 
 ## 环境要求
 
@@ -30,375 +112,208 @@
 - [uv](https://docs.astral.sh/uv/)
 - Docker Desktop 或 Docker Engine
 - Docker Compose v2+
-- 建议为 Docker 分配至少 6 GB 内存；首次启动需要拉取 Milvus 等较大镜像
+- Docker 建议分配至少 6 GB 内存
 
 ## 配置
-
-复制环境变量示例：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Linux 或 macOS：
+Linux/macOS：
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` 不会进入 Git。示例密码只适用于本地开发；共享环境或生产环境必须替换。
-
-真实模型调用还需要配置：
+至少替换本地 PostgreSQL、MinIO、JWT 密码，并配置真实百炼信息：
 
 ```text
 DASHSCOPE_API_KEY=
 BAILIAN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL=qwen3.8-27b
-LLM_TIMEOUT_SECONDS=30
-LLM_MAX_RETRIES=2
-LLM_TEMPERATURE=0.2
-LLM_MAX_COMPLETION_TOKENS=800
-EMBEDDING_MODEL=text-embedding-v4
-EMBEDDING_DIMENSIONS=1024
-KNOWLEDGE_COLLECTION=ecommerce_knowledge
-KNOWLEDGE_TOP_K=3
 BAILIAN_RERANK_BASE_URL=https://dashscope.aliyuncs.com/compatible-api/v1
-RERANK_MODEL=qwen3-rerank
-HYBRID_CANDIDATE_K=10
-RRF_K=60
-RERANK_MIN_SCORE=0.2
 ```
 
-Base URL 必须与 Key 所属地域和业务空间匹配。Key 缺失时应用与 health 仍可启动，但 Chat 返回 `503 model_not_configured`。
+Base URL 必须匹配 Key 所属地域/业务空间。`.env` 已被 Git 忽略；不要把真实 Key 写入源码、文档或提交记录。
 
-在 Docker Compose 中，API 使用 `postgres`、`redis`、`milvus` 等 Service Name 访问依赖。`.env` 中的 `localhost` 默认值用于在宿主机直接运行 API。
+M14 默认成本单价参考[阿里云 `qwen3.8-27b` 华北 2（北京）公开原价](https://help.aliyun.com/zh/model-studio/qwen3-8-27b)，可在价格变化或切换地域时调整：
 
-## 本机开发
-
-安装锁定的全部依赖：
-
-```bash
-uv sync --frozen --all-groups
+```text
+LLM_INPUT_PRICE_PER_MILLION_CNY=3.00
+LLM_OUTPUT_PRICE_PER_MILLION_CNY=12.00
+OTEL_CONSOLE_EXPORTER=true
 ```
 
-完整 pytest 包含真实 PostgreSQL 集成测试，请先确保 Compose 中 PostgreSQL healthy。运行质量检查和测试：
+## Docker 一键启动
 
 ```bash
-uv run ruff check .
-uv run pytest
-```
-
-如果基础设施已由 Docker 启动，也可以在宿主机运行 API：
-
-```bash
-uv run uvicorn ecommerce_ai_agent.main:create_app --factory --reload
-```
-
-## 启动完整本地环境
-
-构建并后台启动：
-
-```bash
-docker compose up -d --build
-```
-
-查看服务状态：
-
-```bash
+docker compose up -d --build --wait
 docker compose ps
 ```
 
-跟踪全部日志：
+API 容器启动时会幂等执行 `alembic upgrade head` 和 SQL Seed，然后启动 Uvicorn。PostgreSQL、Redis、etcd、MinIO、Milvus 使用命名卷；普通 `down/up` 不丢数据。
+
+首次使用 Knowledge Agent 时显式入库（会调用真实 Embedding 并重建学习用 Collection）：
 
 ```bash
-docker compose logs -f
+uv sync --frozen --all-groups
+uv run python scripts/ingest_knowledge.py
 ```
 
-只查看 API 或 Milvus 日志：
+常用状态：
 
 ```bash
 docker compose logs -f api
-docker compose logs -f milvus
-```
-
-首次拉取镜像和启动 Milvus 可能需要数分钟。
-
-## 健康检查
-
-浏览器或命令行访问：
-
-- API 存活：<http://localhost:8000/health/live>
-- API 就绪：<http://localhost:8000/health/ready>
-- Milvus 管理健康端点：<http://localhost:9091/healthz>
-- MinIO Console：<http://localhost:9001>
-
-运行跨平台 smoke test：
-
-```bash
-uv run python scripts/smoke_test.py
-```
-
-readiness 会实际连接 PostgreSQL、执行 Redis `PING`，并调用 Milvus 管理健康端点。它不会创建业务表、LangGraph Checkpoint 或 Milvus Collection。
-
-## Chat API
-
-发送一条消息：
-
-```bash
-curl -X POST http://localhost:8000/api/v1/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message":"我的订单什么时候到？"}'
-```
-
-请求字段：
-
-- `message`：必填字符串，去除首尾空白后长度为 1～4000。
-- `conversation_id`：可选 UUID，只作为会话关联标识，不代表可信用户身份。
-- 不允许额外字段；身份认证将在后续里程碑实现。
-
-当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。`conversation_id` 现在对应 LangGraph `thread_id`；下一次请求回传相同 UUID 时会恢复 PostgreSQL 中的 Graph State。
-
-模型可调用三个只读 Tool，并可通过 Knowledge Agent 使用 Hybrid+Reranker 回答企业政策。业务 Tool 与 Agent 架构未改变，M10 仍不能修改订单或创建退款。
-
-## Conversation Persistence
-
-应用在 FastAPI lifespan 中打开官方 `AsyncPostgresSaver`、执行幂等 `setup()`，并将其传给 `StateGraph.compile(checkpointer=...)`。Checkpoint 使用现有 PostgreSQL 实例，由官方实现维护以下表：
-
-- `checkpoints`
-- `checkpoint_blobs`
-- `checkpoint_writes`
-- `checkpoint_migrations`
-
-应用不会为这些表创建 Alembic Migration。每个请求只向已有 `messages` State 追加最新用户消息；没有新增 memory、profile 或 summary 字段。
-
-显式运行真实多轮验证：
-
-```bash
-uv run python scripts/conversation_smoke_test.py
-```
-
-脚本验证同 conversation 的订单指代、从订单切换到退款 Agent，以及不同 conversation 的上下文隔离。
-
-## LangGraph Workflow
-
-M7 在简单 Route 保持不变的基础上增加 complex 与 Supervisor：
-
-```text
-START → router ─┬→ order_agent   → tools → order_agent   → END
-                ├→ refund_agent  → tools → refund_agent  → END
-                ├→ product_agent → tools → product_agent → END
-                ├→ knowledge_agent → Dense Retrieval → LLM → END
-                ├→ general_agent                           → END
-                └→ complex → supervisor → specialist → tools → specialist
-                             → supervisor_step → 下一个 specialist
-                             → supervisor_final → END
-```
-
-Supervisor Plan 允许 order/refund/product/knowledge。Knowledge Agent 不持有业务 Tool，也不向 State 增加 retrieved documents；复杂路径继续复用现有 `agent_results`。
-
-## Hybrid RAG
-
-知识库包含 `knowledge/` 下 8 份中文 Markdown、24 个语义章节 Chunk。每个章节仍以 600 字符窗口和 80 字符 overlap 为上限。
-
-显式执行入库：
-
-```bash
-uv run python scripts/ingest_knowledge.py
-```
-
-入库命令会明确重建 `ecommerce_knowledge`，因为 M9 Schema 新增中文 Analyzer、BM25 Function 和 `sparse_embedding`。Collection 同时使用 Dense `AUTOINDEX/COSINE` 与 Sparse `SPARSE_INVERTED_INDEX/BM25`。
-
-运行真实 Dense Retrieval 与 Knowledge Agent smoke：
-
-```bash
-uv run python scripts/rag_smoke_test.py
-uv run python scripts/conversation_smoke_test.py
-```
-
-运行 12 条 Retrieval 对比评估：
-
-```bash
-uv run python scripts/evaluate_retrieval.py
-```
-
-当前 Dense、Hybrid、Hybrid+Rerank 的 Hit@1/Hit@3 均为 1.00。Hybrid 改变了 Top-3 候选组成，但 `qwen3-rerank` 在部分查询中降低了非首位候选质量；详见 [evaluation/retrieval_results.md](evaluation/retrieval_results.md)。
-
-所有 API 错误统一为：
-
-```json
-{
-  "error": {
-    "code": "validation_error",
-    "message": "Request validation failed",
-    "details": [
-      {
-        "field": "body.message",
-        "message": "String should have at least 1 character",
-        "type": "string_too_short"
-      }
-    ]
-  }
-}
-```
-
-Swagger UI：<http://localhost:8000/docs>，OpenAPI Schema：<http://localhost:8000/openapi.json>。
-
-## LLM 与 Structured Output 验证
-
-默认 pytest 使用 Fake SDK，不调用外部模型。显式执行真实百炼验证：
-
-```bash
-uv run python scripts/llm_smoke_test.py
-```
-
-该脚本依次验证普通文本生成和 `MessageAssessment` Structured Output。结构化输出使用 JSON Object 模式，提示词给出 JSON Schema，再由 Pydantic 校验为 typed result。脚本只输出模型名、字符数量、类型和耗时，不打印 Key、Endpoint、Prompt 或完整回复。真实调用会消耗额度。
-
-显式验证真实 Supervisor 协作（会调用百炼并读取本地 PostgreSQL Seed）：
-
-```bash
-uv run python scripts/tool_calling_smoke_test.py
-```
-
-该脚本只验证一个简单订单 Route 和一个复杂订单+退款请求，检查 Supervisor Plan、顺序路径、隔离后的 Tool、参数、真实 Tool Result 和最终汇总。输出不包含 Key、Endpoint 或完整业务回答。
-
-Provider 错误复用现有 API Error Contract，区分未配置、鉴权失败、限流/额度、timeout、连接失败、Structured Output 无效和其他 Provider 错误。客户端不会收到 SDK traceback、Key、Authorization Header 或 Provider 原始错误正文。
-
-## 登录与退款审核
-
-开发 Seed 提供 `alice@example.com / customer-password` 与
-`admin@example.com / admin-password`。登录后将返回的 JWT 放入
-`Authorization: Bearer <token>`；订单和退款 Tool 始终使用该可信用户身份。
-
-退款申请继续通过 `/api/v1/chat` 发起。金额不超过 100 元且近 30 天有效退款少于
-2 次时自动完成；其余合格请求返回 `pending_review`。管理员可使用：
-
-```text
-GET  /api/v1/reviews/pending
-POST /api/v1/reviews/{review_id}/approve
-POST /api/v1/reviews/{review_id}/reject
-```
-
-审批接口会恢复原 LangGraph Thread。显式真实模型退款验证会写入开发数据库：
-
-```bash
-uv run python scripts/refund_smoke_test.py
-```
-
-## Agent Evaluation
-
-M13 使用 20 条小型数据集评估整个 Agent System，而不是重复 M9 的 Retriever
-Hit@K。运行真实评估（会调用百炼、Milvus、本地 PostgreSQL 和已启动的 API）：
-
-```bash
-uv run python scripts/evaluate_agents.py
-```
-
-脚本输出 Router、Agent、Tool、参数、任务成功率和安全授权指标；固定基线记录在
-`evaluation/agent_results.md`。评估失败项会保留，不以修改标注的方式制造满分。
-
-## PostgreSQL 业务数据
-
-业务 Schema 只通过 Alembic 管理，应用启动不会调用 `create_all`。升级到最新版本：
-
-```bash
-uv run alembic upgrade head
-uv run alembic current
-uv run alembic check
-```
-
-初始化或补齐可重复使用的开发数据：
-
-```bash
-uv run python scripts/seed_data.py
-```
-
-Seed 可重复运行且不会产生重复记录，当前包含：
-
-- 6 个用户，包括 5 个 customer 和 1 个 admin
-- 12 个商品
-- 24 个订单及订单项
-- 12 条物流、5 条退款、3 条人工审核记录
-- 待支付、处理中、运输中、已完成、已取消等业务场景
-
-业务金额在 PostgreSQL 中使用 `NUMERIC(12,2)`，在 Python 中使用 `Decimal`。状态使用 PostgreSQL Named Enum，不接受任意字符串。
-
-完整测试会安全地创建并删除独立的 `ecommerce_agent_test` 数据库。测试保护规则要求数据库名必须以 `_test` 结尾，不会清理开发数据库。
-
-M2 不增加用户、订单等公共 CRUD API。未来 API 或 Tool 应调用 `UserService`、`CatalogService`、`OrderService`、`RefundService`，不能直接访问 ORM。
-
-## 停止与清理
-
-停止并删除容器和网络，但保留数据卷：
-
-```bash
+docker compose ps
 docker compose down
 ```
 
-再次启动后，PostgreSQL、Redis、etcd、MinIO 和 Milvus 数据仍会保留。
+彻底清理数据只能显式运行 `docker compose down -v`，该操作不可恢复。
 
-彻底删除本地数据：
+## 最终 Demo
+
+Docker 和知识库准备完成后：
 
 ```bash
-docker compose down -v
+uv run python scripts/demo.py
 ```
 
-`down -v` 会删除所有 M0 命名卷，操作不可恢复，请只在明确需要重置环境时执行。
+Demo 使用 Seed 账号，通过真实 HTTP API 顺序展示：
 
-## 常用验证命令
+1. 普通对话
+2. 订单查询
+3. 同 conversation 的指代与跨 Agent 多轮记忆
+4. 商品查询
+5. 企业政策 Knowledge Agent 与 Source
+6. Order + Refund Supervisor 协作
+7. Admin 待审核队列
+
+脚本默认只读且不打印 JWT。真实退款写入、interrupt、approve 与 resume 使用固定会话的显式脚本，重复执行受幂等保护：
+
+```bash
+uv run python scripts/refund_smoke_test.py
+```
+
+开发 Seed 登录信息：
+
+- customer：`alice@example.com / customer-password`
+- admin：`admin@example.com / admin-password`
+
+## API
+
+主要端点：
+
+```text
+GET  /health/live
+GET  /health/ready
+POST /api/v1/auth/login
+POST /api/v1/chat
+GET  /api/v1/reviews/pending
+POST /api/v1/reviews/{review_id}/approve
+POST /api/v1/reviews/{review_id}/reject
+GET  /docs
+GET  /openapi.json
+```
+
+登录并调用 Chat：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"customer-password"}'
+
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"我的订单 EC2026080016 现在是什么状态？"}'
+```
+
+`conversation_id` 可选；回传相同 UUID 会恢复同一用户的 LangGraph Thread。内部 `thread_id` 为 `{user_id}:{conversation_id}`，不同用户和会话相互隔离。
+
+## Observability
+
+每个请求响应包含：
+
+```text
+X-Request-ID: m14-chat-check
+traceparent: 00-<trace_id>-<span_id>-01
+```
+
+API 日志包含一条请求汇总：
+
+```json
+{
+  "message": "Request completed",
+  "execution_path": "router -> order_agent -> tools -> tool:get_current_user_order -> order_agent",
+  "latency_ms": 4334.34,
+  "model_calls": 3,
+  "tool_calls": 1,
+  "input_tokens": 1336,
+  "output_tokens": 261,
+  "estimated_cost_cny": 0.00714,
+  "error_count": 0
+}
+```
+
+Console Span 展示 HTTP → Workflow Node → Model/Tool 的父子关系。Prompt、用户消息、Tool 参数、JWT、API Key 和 Provider 原始错误不会进入 Span 或汇总日志。
+
+这是本地学习级 Observability：没有后端存储、查询 UI、分位指标、采样、告警或 SLO。
+
+## 数据与持久化
+
+SQL Seed 幂等提供：
+
+- 6 个用户（5 customer + 1 admin）
+- 12 个商品
+- 24 个订单与订单项
+- 12 条物流、5+ 条退款、3+ 条人工审核记录
+- 待支付、处理中、运输中、已完成、已取消、退款与审核场景
+
+金额使用 PostgreSQL `NUMERIC(12,2)` 和 Python `Decimal`；业务状态使用 PostgreSQL Named Enum。业务 Schema 由 Alembic 管理；LangGraph Checkpoint 四张表由官方 `AsyncPostgresSaver.setup()` 管理。
+
+## 测试与评估
+
+默认自动化测试不调用百炼：
 
 ```bash
 uv lock --check
-uv sync --frozen --all-groups
 uv run ruff format --check .
 uv run ruff check .
-uv run alembic upgrade head
+uv run pytest -q
 uv run alembic check
-uv run python scripts/seed_data.py
-uv run pytest
-docker compose config --quiet
-docker compose build api
-docker compose up -d
-docker compose ps
 uv run python scripts/smoke_test.py
-uv run python scripts/tool_calling_smoke_test.py
-uv run python scripts/ingest_knowledge.py
-uv run python scripts/rag_smoke_test.py
-uv run python scripts/refund_smoke_test.py
-uv run python scripts/evaluate_agents.py
 ```
 
-真实模型验收需要显式运行：
+显式真实测试会消耗模型额度或写开发数据库：
 
 ```bash
 uv run python scripts/llm_smoke_test.py
+uv run python scripts/tool_calling_smoke_test.py
+uv run python scripts/conversation_smoke_test.py
+uv run python scripts/rag_smoke_test.py
+uv run python scripts/refund_smoke_test.py
 ```
 
-## 常见问题
-
-### 端口已被占用
-
-在 `.env` 中调整 `API_HOST_PORT`、`POSTGRES_HOST_PORT`、`REDIS_HOST_PORT`、`MILVUS_HOST_PORT`、`MILVUS_MANAGEMENT_HOST_PORT`、`MINIO_API_HOST_PORT` 或 `MINIO_CONSOLE_HOST_PORT`。
-
-### 服务长时间处于 starting
-
-先查看 `docker compose ps` 和目标服务日志。Milvus 首次启动耗时通常最长；如果容器被系统杀死，应提高 Docker Desktop 的内存上限。
-
-### readiness 返回 503
-
-响应中的 `dependencies` 会标记不可用的依赖。通过 `docker compose logs <service>` 查看对应服务日志；接口不会返回连接密码或原始异常。
-
-### 修改 `.env` 后配置未生效
-
-重新创建容器：
+评估：
 
 ```bash
-docker compose up -d --force-recreate
+uv run python scripts/evaluate_retrieval.py
+uv run python scripts/evaluate_agents.py
 ```
 
-### Chat 返回 provider_rate_limited
+固定结果见：
 
-检查百炼模型额度、限流和“免费额度用完即停”设置。普通基础设施 smoke 不调用真实模型，可独立验证 Docker 与 API 基础状态。
+- [Retrieval Evaluation](evaluation/retrieval_results.md)
+- [Agent Evaluation](evaluation/agent_results.md)
+- [开发记录](doc/开发记录文档.md)
 
-## 后续开发边界
+## 当前限制
 
-当前 Conversation 会保存完整 State，没有摘要、Token Budget、裁剪、保留期限或删除 API；长对话会持续增加模型上下文和 PostgreSQL checkpoint 历史。
+- 会话保存完整 State，没有摘要、裁剪、保留期限或删除 API。
+- JWT 没有 Refresh Token、OAuth、撤销列表或复杂 RBAC。
+- 退款规则是学习用固定阈值，没有真实支付网关、对账或 ML 风控。
+- Supervisor 只做顺序执行，没有并行、Replanning 或 Reflection。
+- RAG 数据集很小，当前评估满分不代表真实大规模知识库表现。
+- Agent Evaluation 只有 20 条单次样本，不代表模型长期稳定性。
+- Console Trace 与成本估算只适合本地学习，不是生产监控或财务账单。
