@@ -67,7 +67,6 @@ RERANK_MODEL=qwen3-rerank
 HYBRID_CANDIDATE_K=10
 RRF_K=60
 RERANK_MIN_SCORE=0.2
-DEVELOPMENT_USER_EMAIL=alice@example.com
 ```
 
 Base URL 必须与 Key 所属地域和业务空间匹配。Key 缺失时应用与 health 仍可启动，但 Chat 返回 `503 model_not_configured`。

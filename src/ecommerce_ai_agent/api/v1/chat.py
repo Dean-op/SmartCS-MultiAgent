@@ -2,10 +2,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
+from ecommerce_ai_agent.api.dependencies import get_current_user
 from ecommerce_ai_agent.llm.errors import ModelConfigurationError
 from ecommerce_ai_agent.schemas.chat import ChatRequest, ChatResponse
 from ecommerce_ai_agent.schemas.error import ErrorResponse
 from ecommerce_ai_agent.services.chat import ChatService
+from ecommerce_ai_agent.services.data_types import UserData
 
 router = APIRouter()
 
@@ -33,5 +35,6 @@ def get_chat_service(request: Request) -> ChatService:
 async def chat(
     request: ChatRequest,
     service: Annotated[ChatService, Depends(get_chat_service)],
+    current_user: Annotated[UserData, Depends(get_current_user)],
 ) -> ChatResponse:
-    return await service.respond(request)
+    return await service.respond(request, current_user.id)

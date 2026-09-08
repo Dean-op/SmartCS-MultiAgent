@@ -3,10 +3,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid5
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ecommerce_ai_agent.auth import hash_password
 from ecommerce_ai_agent.models import HumanReview, Order, OrderItem, Product, Refund, Shipment, User
 from ecommerce_ai_agent.models.enums import (
     OrderStatus,
@@ -279,6 +280,16 @@ async def seed_database(session: AsyncSession) -> SeedCounts:
         (HumanReview, "human_reviews"),
     ):
         await insert_seed_rows(session, model, rows[key])
+
+    for email, password in (
+        ("alice@example.com", "customer-password"),
+        ("admin@example.com", "admin-password"),
+    ):
+        await session.execute(
+            update(User)
+            .where(User.email == email, User.password_hash.is_(None))
+            .values(password_hash=hash_password(password))
+        )
 
     return SeedCounts(
         users=await count_rows(session, User),

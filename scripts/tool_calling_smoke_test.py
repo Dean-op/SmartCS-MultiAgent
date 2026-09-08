@@ -7,9 +7,10 @@ import sys
 from ecommerce_ai_agent.business_tools import BusinessTools
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.database import create_database
+from ecommerce_ai_agent.knowledge import KnowledgeBase
 from ecommerce_ai_agent.llm.client import BailianModel
 from ecommerce_ai_agent.llm.errors import ModelError
-from ecommerce_ai_agent.seed import seed_database
+from ecommerce_ai_agent.seed import seed_database, seed_id
 from ecommerce_ai_agent.workflow import CUSTOMER_SERVICE_SYSTEM_PROMPT, build_chat_workflow
 
 
@@ -18,13 +19,13 @@ class RecordingBusinessTools(BusinessTools):
         super().__init__(*args)
         self.calls: list[tuple[str, str, str]] = []
 
-    async def run(self, name: str, arguments: str) -> str:
-        result = await super().run(name, arguments)
+    async def run(self, name: str, arguments: str, user_id) -> str:
+        result = await super().run(name, arguments, user_id)
         self.calls.append((name, arguments, result))
         return result
 
 
-async def graph_updates(workflow, message: str):
+async def graph_updates(workflow, message: str, user_id):
     return [
         update
         async for update in workflow.astream(
@@ -32,7 +33,8 @@ async def graph_updates(workflow, message: str):
                 "messages": [
                     {"role": "system", "content": CUSTOMER_SERVICE_SYSTEM_PROMPT},
                     {"role": "user", "content": message},
-                ]
+                ],
+                "user_id": str(user_id),
             },
             stream_mode="updates",
         )
@@ -47,8 +49,10 @@ async def run() -> int:
 
     database = create_database(settings)
     model = BailianModel(settings)
-    tools = RecordingBusinessTools(database.session_factory, settings.development_user_email)
-    workflow = build_chat_workflow(model, tools)
+    user_id = seed_id("user:alice@example.com")
+    tools = RecordingBusinessTools(database.session_factory)
+    knowledge = KnowledgeBase(settings, model)
+    workflow = build_chat_workflow(model, tools, knowledge)
     try:
         async with database.session_factory.begin() as session:
             await seed_database(session)
@@ -56,6 +60,7 @@ async def run() -> int:
         simple_updates = await graph_updates(
             workflow,
             "我的订单 EC2026080016 现在是什么状态？",
+            user_id,
         )
         simple_path = [next(iter(update)) for update in simple_updates]
         if simple_path != ["router", "order_agent", "tools", "order_agent"]:
@@ -67,6 +72,7 @@ async def run() -> int:
         complex_updates = await graph_updates(
             workflow,
             "查询订单 EC2026080016，同时告诉我这个订单相关退款现在是什么状态。",
+            user_id,
         )
         complex_path = [next(iter(update)) for update in complex_updates]
         expected_path = [
@@ -107,6 +113,7 @@ async def run() -> int:
         print(f"M7 Supervisor smoke failed: {code}: {exc}", file=sys.stderr)
         return 1
     finally:
+        await knowledge.close()
         await model.close()
         await database.engine.dispose()
 

@@ -31,6 +31,10 @@ class Settings(BaseSettings):
 
     healthcheck_timeout_seconds: float = 3.0
 
+    jwt_secret: SecretStr | None = None
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = Field(default=60, ge=1, le=1440)
+
     dashscope_api_key: SecretStr | None = None
     bailian_base_url: AnyHttpUrl | None = None
     llm_model: str | None = Field(default=None, min_length=1)
@@ -53,6 +57,3 @@ class Settings(BaseSettings):
     hybrid_candidate_k: int = Field(default=10, ge=2, le=50)
     rrf_k: float = Field(default=60, gt=0, le=16384)
     rerank_min_score: float = Field(default=0.2, ge=0, le=1)
-
-    # Temporary trusted identity for local M4 verification; JWT will replace it later.
-    development_user_email: str = Field(default="alice@example.com", min_length=3)

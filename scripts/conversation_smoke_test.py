@@ -14,6 +14,7 @@ from ecommerce_ai_agent.knowledge import KnowledgeBase
 from ecommerce_ai_agent.llm.client import BailianModel
 from ecommerce_ai_agent.llm.errors import ModelError
 from ecommerce_ai_agent.schemas.chat import ChatRequest
+from ecommerce_ai_agent.seed import seed_id
 from ecommerce_ai_agent.services.chat import ChatService
 
 
@@ -22,9 +23,9 @@ class RecordingBusinessTools(BusinessTools):
         super().__init__(*args)
         self.calls: list[tuple[str, str]] = []
 
-    async def run(self, name: str, arguments: str) -> str:
+    async def run(self, name: str, arguments: str, user_id) -> str:
         self.calls.append((name, arguments))
-        return await super().run(name, arguments)
+        return await super().run(name, arguments, user_id)
 
 
 async def run() -> int:
@@ -32,7 +33,8 @@ async def run() -> int:
     database = create_database(settings)
     model = BailianModel(settings)
     knowledge = KnowledgeBase(settings, model)
-    tools = RecordingBusinessTools(database.session_factory, settings.development_user_email)
+    user_id = seed_id("user:alice@example.com")
+    tools = RecordingBusinessTools(database.session_factory)
     dsn = build_checkpoint_url(settings).render_as_string(hide_password=False)
     try:
         async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
@@ -44,7 +46,7 @@ async def run() -> int:
                 checkpointer=checkpointer,
             )
 
-            first = await service.respond(ChatRequest(message="查询订单 EC2026080016"))
+            first = await service.respond(ChatRequest(message="查询订单 EC2026080016"), user_id)
             conversation_id = first.conversation_id
 
             tools.calls.clear()
@@ -52,7 +54,8 @@ async def run() -> int:
                 ChatRequest(
                     message="它现在是什么状态？",
                     conversation_id=conversation_id,
-                )
+                ),
+                user_id,
             )
             if not (
                 len(tools.calls) == 1
@@ -66,7 +69,8 @@ async def run() -> int:
                 ChatRequest(
                     message="它有没有退款记录？",
                     conversation_id=conversation_id,
-                )
+                ),
+                user_id,
             )
             if not (
                 len(tools.calls) == 1
@@ -82,7 +86,8 @@ async def run() -> int:
                 ChatRequest(
                     message="它现在是什么状态？",
                     conversation_id=uuid4(),
-                )
+                ),
+                user_id,
             )
             leaked = any(
                 private_id in json.dumps(tools.calls, ensure_ascii=False)

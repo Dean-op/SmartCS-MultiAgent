@@ -9,6 +9,8 @@ from ecommerce_ai_agent.llm.schemas import RouteName
 from ecommerce_ai_agent.schemas.chat import ChatRequest
 from ecommerce_ai_agent.services.chat import ChatService
 
+TEST_USER_ID = uuid4()
+
 
 class RecordingModel:
     def __init__(
@@ -46,7 +48,7 @@ class RecordingTools:
         self.result = result
         self.calls: list[tuple[str, str]] = []
 
-    async def run(self, name: str, arguments: str) -> str:
+    async def run(self, name: str, arguments: str, user_id) -> str:
         self.calls.append((name, arguments))
         return self.result
 
@@ -78,7 +80,8 @@ async def test_chat_service_executes_tool_then_returns_final_model_answer() -> N
     service = ChatService(model, tools, FakeKnowledge())
 
     response = await service.respond(
-        ChatRequest(message="查询订单 EC2026080016", conversation_id=conversation_id)
+        ChatRequest(message="查询订单 EC2026080016", conversation_id=conversation_id),
+        TEST_USER_ID,
     )
 
     assert tools.calls == [("get_current_user_order", '{"order_number":"EC2026080016"}')]
@@ -122,7 +125,7 @@ async def test_chat_service_allows_direct_answer_without_tool_execution() -> Non
     tools = RecordingTools()
     service = ChatService(model, tools, FakeKnowledge())
 
-    response = await service.respond(ChatRequest(message="你好"))
+    response = await service.respond(ChatRequest(message="你好"), TEST_USER_ID)
 
     assert response.message.content == "你好！"
     assert tools.calls == []
@@ -142,7 +145,7 @@ async def test_chat_service_stops_repeated_tool_calls_after_two_rounds() -> None
     )
 
     with pytest.raises(ModelProviderError):
-        await service.respond(ChatRequest(message="查询商品"))
+        await service.respond(ChatRequest(message="查询商品"), TEST_USER_ID)
 
 
 @pytest.mark.asyncio

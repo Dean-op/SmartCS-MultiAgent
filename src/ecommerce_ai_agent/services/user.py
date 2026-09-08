@@ -2,6 +2,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ecommerce_ai_agent.auth import verify_password
 from ecommerce_ai_agent.repositories.user import UserRepository
 from ecommerce_ai_agent.services.data_types import UserData
 
@@ -17,3 +18,14 @@ class UserService:
     async def get_user_by_email(self, email: str) -> UserData | None:
         user = await self._repository.get_by_email(email)
         return UserData.model_validate(user) if user is not None else None
+
+    async def authenticate(self, email: str, password: str) -> UserData | None:
+        user = await self._repository.get_by_email(email)
+        if (
+            user is None
+            or not user.is_active
+            or user.password_hash is None
+            or not verify_password(password, user.password_hash)
+        ):
+            return None
+        return UserData.model_validate(user)

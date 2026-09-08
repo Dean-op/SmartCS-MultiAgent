@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -7,6 +8,8 @@ from ecommerce_ai_agent.llm.client import ModelTurn, ToolCall
 from ecommerce_ai_agent.llm.errors import ModelProviderError
 from ecommerce_ai_agent.llm.schemas import RouteDecision, RouteName, SupervisorPlan
 from ecommerce_ai_agent.workflow import build_chat_workflow
+
+TEST_USER_ID = uuid4()
 
 
 class ScriptedModel:
@@ -45,7 +48,7 @@ class RecordingTools:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    async def run(self, name: str, arguments: str) -> str:
+    async def run(self, name: str, arguments: str, user_id) -> str:
         self.calls.append((name, arguments))
         return '{"found":true}'
 
@@ -64,7 +67,10 @@ async def graph_updates(graph, message: str) -> list[dict[str, Any]]:
     return [
         update
         async for update in graph.astream(
-            {"messages": [{"role": "user", "content": message}]},
+            {
+                "messages": [{"role": "user", "content": message}],
+                "user_id": str(TEST_USER_ID),
+            },
             stream_mode="updates",
         )
     ]

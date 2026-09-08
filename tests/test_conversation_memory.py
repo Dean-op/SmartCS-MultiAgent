@@ -8,6 +8,8 @@ from ecommerce_ai_agent.llm.client import ModelTurn, ToolCall
 from ecommerce_ai_agent.schemas.chat import ChatRequest
 from ecommerce_ai_agent.services.chat import ChatService
 
+TEST_USER_ID = uuid4()
+
 
 class ScriptedConversationModel:
     def __init__(
@@ -42,7 +44,7 @@ class RecordingTools:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    async def run(self, name: str, arguments: str) -> str:
+    async def run(self, name: str, arguments: str, user_id) -> str:
         self.calls.append((name, arguments))
         return '{"found":true,"refunds":[{"refund_number":"RF2026080001"}]}'
 
@@ -85,10 +87,12 @@ async def test_same_conversation_restores_order_context_and_uses_uuid_as_thread_
     service = ChatService(model, tools, EmptyKnowledge(), checkpointer=checkpointer)
 
     await service.respond(
-        ChatRequest(message="查询订单 EC2026080016", conversation_id=conversation_id)
+        ChatRequest(message="查询订单 EC2026080016", conversation_id=conversation_id),
+        TEST_USER_ID,
     )
     response = await service.respond(
-        ChatRequest(message="它现在是什么状态？", conversation_id=conversation_id)
+        ChatRequest(message="它现在是什么状态？", conversation_id=conversation_id),
+        TEST_USER_ID,
     )
 
     assert response.conversation_id == conversation_id
@@ -98,7 +102,7 @@ async def test_same_conversation_restores_order_context_and_uses_uuid_as_thread_
     assert any(message.get("content") == "查询订单 EC2026080016" for message in follow_up_messages)
     assert follow_up_messages[-1] == {"role": "user", "content": "它现在是什么状态？"}
     checkpoint = await checkpointer.aget_tuple(
-        {"configurable": {"thread_id": str(conversation_id)}}
+        {"configurable": {"thread_id": f"{TEST_USER_ID}:{conversation_id}"}}
     )
     assert checkpoint is not None
 
@@ -134,10 +138,12 @@ async def test_same_conversation_can_route_from_order_history_to_refund_agent() 
     )
 
     await service.respond(
-        ChatRequest(message="查询订单 EC2026080016", conversation_id=conversation_id)
+        ChatRequest(message="查询订单 EC2026080016", conversation_id=conversation_id),
+        TEST_USER_ID,
     )
     await service.respond(
-        ChatRequest(message="它有没有退款记录？", conversation_id=conversation_id)
+        ChatRequest(message="它有没有退款记录？", conversation_id=conversation_id),
+        TEST_USER_ID,
     )
 
     assert [name for name, _ in tools.calls] == [
@@ -162,9 +168,11 @@ async def test_different_conversations_do_not_share_router_context() -> None:
         checkpointer=InMemorySaver(),
     )
 
-    await service.respond(ChatRequest(message="记住订单 EC-PRIVATE", conversation_id=first_id))
-    await service.respond(ChatRequest(message="继续", conversation_id=first_id))
-    await service.respond(ChatRequest(message="继续", conversation_id=second_id))
+    await service.respond(
+        ChatRequest(message="记住订单 EC-PRIVATE", conversation_id=first_id), TEST_USER_ID
+    )
+    await service.respond(ChatRequest(message="继续", conversation_id=first_id), TEST_USER_ID)
+    await service.respond(ChatRequest(message="继续", conversation_id=second_id), TEST_USER_ID)
 
     assert "EC-PRIVATE" in model.router_inputs[1]
     assert "EC-PRIVATE" not in model.router_inputs[2]

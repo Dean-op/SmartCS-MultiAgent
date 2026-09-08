@@ -3,6 +3,7 @@ import json
 import pytest
 
 from ecommerce_ai_agent.business_tools import TOOL_DEFINITIONS, BusinessTools
+from ecommerce_ai_agent.seed import seed_id
 from tests.integration.conftest import IntegrationDatabase
 
 
@@ -24,11 +25,14 @@ def test_tool_schemas_never_allow_the_model_to_supply_user_identity() -> None:
 async def test_order_tool_uses_trusted_user_and_returns_compact_business_data(
     seeded_database: IntegrationDatabase,
 ) -> None:
-    tools = BusinessTools(seeded_database.session_factory, "alice@example.com")
+    tools = BusinessTools(seeded_database.session_factory)
+    alice_id = seed_id("user:alice@example.com")
 
-    owned = json.loads(await tools.run("get_current_user_order", '{"order_number":"EC2026080016"}'))
+    owned = json.loads(
+        await tools.run("get_current_user_order", '{"order_number":"EC2026080016"}', alice_id)
+    )
     another_users_order = json.loads(
-        await tools.run("get_current_user_order", '{"order_number":"EC2026080002"}')
+        await tools.run("get_current_user_order", '{"order_number":"EC2026080002"}', alice_id)
     )
 
     assert owned["found"] is True
@@ -43,9 +47,15 @@ async def test_order_tool_uses_trusted_user_and_returns_compact_business_data(
 async def test_product_tool_returns_money_as_decimal_string(
     seeded_database: IntegrationDatabase,
 ) -> None:
-    tools = BusinessTools(seeded_database.session_factory, "alice@example.com")
+    tools = BusinessTools(seeded_database.session_factory)
 
-    result = json.loads(await tools.run("get_product_by_sku", '{"sku":"ELEC-HUB-001"}'))
+    result = json.loads(
+        await tools.run(
+            "get_product_by_sku",
+            '{"sku":"ELEC-HUB-001"}',
+            seed_id("user:alice@example.com"),
+        )
+    )
 
     assert result == {
         "found": True,
@@ -61,13 +71,14 @@ async def test_product_tool_returns_money_as_decimal_string(
 async def test_refund_tool_applies_current_user_order_ownership(
     seeded_database: IntegrationDatabase,
 ) -> None:
-    tools = BusinessTools(seeded_database.session_factory, "alice@example.com")
+    tools = BusinessTools(seeded_database.session_factory)
+    alice_id = seed_id("user:alice@example.com")
 
     owned = json.loads(
-        await tools.run("get_current_user_refund", '{"refund_number":"RF2026080001"}')
+        await tools.run("get_current_user_refund", '{"refund_number":"RF2026080001"}', alice_id)
     )
     another_users_refund = json.loads(
-        await tools.run("get_current_user_refund", '{"refund_number":"RF2026080002"}')
+        await tools.run("get_current_user_refund", '{"refund_number":"RF2026080002"}', alice_id)
     )
 
     assert owned["found"] is True
@@ -82,13 +93,15 @@ async def test_refund_tool_applies_current_user_order_ownership(
 async def test_tool_rejects_unknown_name_and_invalid_arguments_without_database_access(
     seeded_database: IntegrationDatabase,
 ) -> None:
-    tools = BusinessTools(seeded_database.session_factory, "alice@example.com")
+    tools = BusinessTools(seeded_database.session_factory)
+    alice_id = seed_id("user:alice@example.com")
 
-    unknown = json.loads(await tools.run("unknown", "{}"))
+    unknown = json.loads(await tools.run("unknown", "{}", alice_id))
     untrusted_argument = json.loads(
         await tools.run(
             "get_current_user_order",
             '{"order_number":"EC2026080016","user_id":"attacker"}',
+            alice_id,
         )
     )
 

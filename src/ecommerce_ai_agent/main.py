@@ -51,7 +51,7 @@ def create_app(
             await checkpointer.setup()
             service = ChatService(
                 model,
-                BusinessTools(database.session_factory, settings.development_user_email),
+                BusinessTools(database.session_factory),
                 KnowledgeBase(settings, model),
                 checkpointer=checkpointer,
             )
@@ -82,6 +82,7 @@ def create_app(
     )
     application.state.chat_service = chat_service
     application.state.database = None
+    application.state.settings = settings
     register_exception_handlers(application)
     application.include_router(api_v1_router)
 

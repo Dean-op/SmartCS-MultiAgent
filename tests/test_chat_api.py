@@ -1,11 +1,13 @@
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from pydantic import SecretStr
 
+from ecommerce_ai_agent.api.dependencies import get_current_user
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.health import HealthChecker
 from ecommerce_ai_agent.llm.client import ModelTurn
@@ -34,7 +36,7 @@ class FakeModel:
 
 
 class FakeTools:
-    async def run(self, name: str, arguments: str) -> str:
+    async def run(self, name: str, arguments: str, user_id) -> str:
         return '{"found":false}'
 
 
@@ -55,11 +57,13 @@ def build_test_app():
             "milvus": healthy_probe,
         }
     )
-    return create_app(
+    application = create_app(
         settings=settings,
         health_checker=checker,
         chat_service=ChatService(FakeModel(), FakeTools(), FakeKnowledge()),
     )
+    application.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid4())
+    return application
 
 
 @pytest.mark.asyncio

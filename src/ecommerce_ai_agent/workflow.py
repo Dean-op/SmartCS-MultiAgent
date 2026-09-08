@@ -1,5 +1,6 @@
 from operator import add
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
 
@@ -59,6 +60,7 @@ class ChatState(TypedDict):
     current_step: NotRequired[int]
     agent_results: NotRequired[dict[SpecialistRoute, str]]
     tool_used: NotRequired[bool]
+    user_id: NotRequired[str]
 
 
 def _user_message(state: ChatState) -> str:
@@ -200,6 +202,7 @@ def build_chat_workflow(
                     "content": await tools.run(
                         call["function"]["name"],
                         call["function"]["arguments"],
+                        UUID(state["user_id"]),
                     ),
                 }
                 for call in calls

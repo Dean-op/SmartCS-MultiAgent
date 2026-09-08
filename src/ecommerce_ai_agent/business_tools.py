@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -8,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ecommerce_ai_agent.services.catalog import CatalogService
 from ecommerce_ai_agent.services.order import OrderService
 from ecommerce_ai_agent.services.refund import RefundService
-from ecommerce_ai_agent.services.user import UserService
 
 logger = logging.getLogger(__name__)
 
@@ -63,24 +63,22 @@ class BusinessTools:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        trusted_user_email: str,
     ) -> None:
         self._session_factory = session_factory
-        self._trusted_user_email = trusted_user_email
 
-    async def run(self, name: str, arguments: str) -> str:
+    async def run(self, name: str, arguments: str, user_id: UUID) -> str:
         try:
             async with self._session_factory() as session:
                 match name:
                     case "get_current_user_order":
                         parsed = OrderArguments.model_validate_json(arguments)
-                        result = await self._order(session, parsed.order_number)
+                        result = await self._order(session, user_id, parsed.order_number)
                     case "get_product_by_sku":
                         parsed = ProductArguments.model_validate_json(arguments)
                         result = await self._product(session, parsed.sku)
                     case "get_current_user_refund":
                         parsed = RefundArguments.model_validate_json(arguments)
-                        result = await self._refund(session, parsed.refund_number)
+                        result = await self._refund(session, user_id, parsed.refund_number)
                     case _:
                         return self._json({"error": "unknown_tool"})
         except ValidationError:
@@ -89,11 +87,10 @@ class BusinessTools:
         logger.info("Business tool executed", extra={"tool_name": name})
         return self._json(result)
 
-    async def _order(self, session: AsyncSession, order_number: str) -> dict[str, Any]:
-        user = await UserService(session).get_user_by_email(self._trusted_user_email)
-        if user is None or not user.is_active:
-            return {"found": False}
-        order = await OrderService(session).get_order_for_user(user.id, order_number)
+    async def _order(
+        self, session: AsyncSession, user_id: UUID, order_number: str
+    ) -> dict[str, Any]:
+        order = await OrderService(session).get_order_for_user(user_id, order_number)
         if order is None:
             return {"found": False}
 
@@ -146,14 +143,13 @@ class BusinessTools:
             "is_active": product.is_active,
         }
 
-    async def _refund(self, session: AsyncSession, refund_number: str) -> dict[str, Any]:
-        user = await UserService(session).get_user_by_email(self._trusted_user_email)
-        if user is None or not user.is_active:
-            return {"found": False}
+    async def _refund(
+        self, session: AsyncSession, user_id: UUID, refund_number: str
+    ) -> dict[str, Any]:
         refund = await RefundService(session).get_refund_by_number(refund_number)
         if refund is None:
             return {"found": False}
-        orders = await OrderService(session).list_user_orders(user.id)
+        orders = await OrderService(session).list_user_orders(user_id)
         if refund.order_id not in {order.id for order in orders}:
             return {"found": False}
 

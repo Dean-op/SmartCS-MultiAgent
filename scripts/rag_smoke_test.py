@@ -9,6 +9,7 @@ from ecommerce_ai_agent.database import create_database
 from ecommerce_ai_agent.knowledge import KnowledgeBase
 from ecommerce_ai_agent.llm.client import BailianModel
 from ecommerce_ai_agent.llm.errors import ModelError
+from ecommerce_ai_agent.seed import seed_id
 from ecommerce_ai_agent.workflow import CUSTOMER_SERVICE_SYSTEM_PROMPT, build_chat_workflow
 
 
@@ -19,7 +20,7 @@ async def run() -> int:
     knowledge = KnowledgeBase(settings, model)
     workflow = build_chat_workflow(
         model,
-        BusinessTools(database.session_factory, settings.development_user_email),
+        BusinessTools(database.session_factory),
         knowledge,
     )
     try:
@@ -49,7 +50,8 @@ async def run() -> int:
                     "messages": [
                         {"role": "system", "content": CUSTOMER_SERVICE_SYSTEM_PROMPT},
                         {"role": "user", "content": question},
-                    ]
+                    ],
+                    "user_id": str(seed_id("user:alice@example.com")),
                 },
                 stream_mode="updates",
             )

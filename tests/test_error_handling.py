@@ -1,7 +1,11 @@
+from types import SimpleNamespace
+from uuid import uuid4
+
 import httpx
 import pytest
 from pydantic import SecretStr
 
+from ecommerce_ai_agent.api.dependencies import get_current_user
 from ecommerce_ai_agent.api.errors import ApplicationError
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.health import HealthChecker
@@ -115,7 +119,7 @@ async def test_model_error_uses_existing_error_contract() -> None:
     application = build_test_app()
 
     class FakeTools:
-        async def run(self, name: str, arguments: str) -> str:
+        async def run(self, name: str, arguments: str, user_id) -> str:
             return '{"found":false}'
 
     class FakeKnowledge:
@@ -126,6 +130,7 @@ async def test_model_error_uses_existing_error_contract() -> None:
             return None
 
     application.state.chat_service = ChatService(TimeoutModel(), FakeTools(), FakeKnowledge())
+    application.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid4())
     transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/v1/chat", json={"message": "hello"})

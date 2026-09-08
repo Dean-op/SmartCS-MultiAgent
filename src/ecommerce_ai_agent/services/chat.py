@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from ecommerce_ai_agent.business_tools import BusinessTools
 from ecommerce_ai_agent.knowledge import KnowledgeBase
@@ -28,14 +28,16 @@ class ChatService:
             checkpointer=checkpointer,
         )
 
-    async def respond(self, request: ChatRequest) -> ChatResponse:
+    async def respond(self, request: ChatRequest, user_id: UUID) -> ChatResponse:
         conversation_id = request.conversation_id or uuid4()
+        thread_id = f"{user_id}:{conversation_id}"
         state = await self._workflow.ainvoke(
             {
                 "messages": [{"role": "user", "content": request.message}],
                 "tool_used": False,
+                "user_id": str(user_id),
             },
-            {"configurable": {"thread_id": str(conversation_id)}},
+            {"configurable": {"thread_id": thread_id}},
         )
         content = state["messages"][-1].get("content")
         if not isinstance(content, str) or not content.strip():

@@ -19,7 +19,7 @@ class GeneralModel:
 
 
 class UnusedTools:
-    async def run(self, name: str, arguments: str) -> str:
+    async def run(self, name: str, arguments: str, user_id) -> str:
         raise AssertionError("general route must not execute tools")
 
 
