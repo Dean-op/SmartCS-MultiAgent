@@ -284,6 +284,18 @@ POST /api/v1/reviews/{review_id}/reject
 uv run python scripts/refund_smoke_test.py
 ```
 
+## Agent Evaluation
+
+M13 使用 20 条小型数据集评估整个 Agent System，而不是重复 M9 的 Retriever
+Hit@K。运行真实评估（会调用百炼、Milvus、本地 PostgreSQL 和已启动的 API）：
+
+```bash
+uv run python scripts/evaluate_agents.py
+```
+
+脚本输出 Router、Agent、Tool、参数、任务成功率和安全授权指标；固定基线记录在
+`evaluation/agent_results.md`。评估失败项会保留，不以修改标注的方式制造满分。
+
 ## PostgreSQL 业务数据
 
 业务 Schema 只通过 Alembic 管理，应用启动不会调用 `create_all`。升级到最新版本：
@@ -352,6 +364,7 @@ uv run python scripts/tool_calling_smoke_test.py
 uv run python scripts/ingest_knowledge.py
 uv run python scripts/rag_smoke_test.py
 uv run python scripts/refund_smoke_test.py
+uv run python scripts/evaluate_agents.py
 ```
 
 真实模型验收需要显式运行：
