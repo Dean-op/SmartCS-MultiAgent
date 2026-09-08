@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
@@ -36,6 +37,12 @@ EXPECTED_ENUMS = {
     "review_status",
     "review_priority",
 }
+
+
+def pytest_asyncio_loop_factories(config, item):
+    if sys.platform == "win32":
+        return {"selector": asyncio.SelectorEventLoop}
+    return {"default": asyncio.new_event_loop}
 
 
 @dataclass(frozen=True, slots=True)

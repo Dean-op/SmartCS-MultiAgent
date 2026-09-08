@@ -34,7 +34,8 @@ CUSTOMER_SERVICE_SYSTEM_PROMPT = """你是一名简洁、诚实的电商客服�
 回答普通问题，但不要声称查询或修改了真实业务数据。"""
 
 ORDER_AGENT_PROMPT = """你是订单查询客服，只处理当前用户的订单、订单项和物流问题。
-需要真实数据时只使用订单查询工具，只能根据工具结果回答，不得编造或执行写操作。"""
+每次用户询问订单当前状态时，只要消息或历史中有订单号，就必须调用订单查询工具刷新。
+只能根据工具结果回答，不得编造或执行写操作。"""
 
 REFUND_AGENT_PROMPT = """你是退款查询客服，只处理当前用户已有退款记录和进度问题。
 只要用户消息或前序结果中有退款单号，就必须使用退款查询工具确认最新状态。
@@ -65,6 +66,12 @@ def _user_message(state: ChatState) -> str:
         message["content"]
         for message in reversed(state["messages"])
         if message.get("role") == "user"
+    )
+
+
+def _router_context(state: ChatState) -> str:
+    return "\n".join(
+        f"{message.get('role')}: {message.get('content')}" for message in state["messages"]
     )
 
 
@@ -101,11 +108,17 @@ def _active_specialist(state: ChatState) -> SpecialistRoute:
     raise ModelProviderError
 
 
-def build_chat_workflow(model: BailianModel, tools: BusinessTools, knowledge: KnowledgeBase):
+def build_chat_workflow(
+    model: BailianModel,
+    tools: BusinessTools,
+    knowledge: KnowledgeBase,
+    *,
+    checkpointer: Any | None = None,
+):
     async def router(state: ChatState) -> dict[str, RouteName]:
         decision = await model.generate_structured(
             ROUTER_PROMPT,
-            _user_message(state),
+            _router_context(state),
             RouteDecision,
         )
         return {"route": decision.route}
@@ -285,4 +298,4 @@ def build_chat_workflow(model: BailianModel, tools: BusinessTools, knowledge: Kn
     builder.add_conditional_edges("tools", route_to_active_specialist)
     builder.add_conditional_edges("supervisor_step", route_after_step)
     builder.add_edge("supervisor_final", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

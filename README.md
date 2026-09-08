@@ -1,6 +1,6 @@
 # ecommerce-ai-agent
 
-面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M9：Hybrid Search + Reranker**。
+面向电商售前、售后的 Multi-Agent 智能客服与业务执行系统。本仓库当前已完成 **M10：Conversation Memory + LangGraph Persistence**。
 
 ## 当前能力
 
@@ -17,11 +17,12 @@
 - Structured Supervisor Plan 与 Specialist 顺序协作、结果汇总
 - `text-embedding-v4` + Milvus Dense Retrieval + Knowledge Agent
 - Milvus BM25、Dense+BM25 RRF 与百炼 `qwen3-rerank`
+- LangGraph `AsyncPostgresSaver` 持久化多轮 Conversation State
 - SQLAlchemy 2.x 异步数据访问、Alembic Migration 和幂等 Seed Data
 - User、Product、Order、OrderItem、Shipment、Refund、HumanReview 业务模型
 - 面向后续 Tool 的 Repository、Service 和只读 DTO 边界
 
-当前不包含 Query Rewrite、HyDE、Multi Query、Memory、JWT、Redis Session、Checkpointer、完整 Agent Evaluation 或 Observability。
+当前不包含长期记忆、摘要、消息裁剪、JWT、Redis Conversation、完整 Agent Evaluation 或 Observability。
 
 ## 环境要求
 
@@ -156,9 +157,28 @@ curl -X POST http://localhost:8000/api/v1/chat \
 - `conversation_id`：可选 UUID，只作为会话关联标识，不代表可信用户身份。
 - 不允许额外字段；身份认证将在后续里程碑实现。
 
-当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。客户端可在下一次请求中回传 `conversation_id`，但 M9 仍不保存会话状态。
+当前 assistant content 来自 `qwen3.8-27b`，响应 `mode` 为 `llm`。`conversation_id` 现在对应 LangGraph `thread_id`；下一次请求回传相同 UUID 时会恢复 PostgreSQL 中的 Graph State。
 
-模型可调用三个只读 Tool，并可通过 Knowledge Agent 使用 Hybrid+Reranker 回答企业政策。业务 Tool 与 Agent 架构未改变，M9 仍不能修改订单或创建退款。
+模型可调用三个只读 Tool，并可通过 Knowledge Agent 使用 Hybrid+Reranker 回答企业政策。业务 Tool 与 Agent 架构未改变，M10 仍不能修改订单或创建退款。
+
+## Conversation Persistence
+
+应用在 FastAPI lifespan 中打开官方 `AsyncPostgresSaver`、执行幂等 `setup()`，并将其传给 `StateGraph.compile(checkpointer=...)`。Checkpoint 使用现有 PostgreSQL 实例，由官方实现维护以下表：
+
+- `checkpoints`
+- `checkpoint_blobs`
+- `checkpoint_writes`
+- `checkpoint_migrations`
+
+应用不会为这些表创建 Alembic Migration。每个请求只向已有 `messages` State 追加最新用户消息；没有新增 memory、profile 或 summary 字段。
+
+显式运行真实多轮验证：
+
+```bash
+uv run python scripts/conversation_smoke_test.py
+```
+
+脚本验证同 conversation 的订单指代、从订单切换到退款 Agent，以及不同 conversation 的上下文隔离。
 
 ## LangGraph Workflow
 
@@ -193,6 +213,7 @@ uv run python scripts/ingest_knowledge.py
 
 ```bash
 uv run python scripts/rag_smoke_test.py
+uv run python scripts/conversation_smoke_test.py
 ```
 
 运行 12 条 Retrieval 对比评估：
@@ -346,4 +367,4 @@ docker compose up -d --force-recreate
 
 ## 后续开发边界
 
-当前评估集很小且 Dense 已满分，不能据此证明 Hybrid 或 Reranker 有稳定收益。后续应优先增加困难样本和相关性标注，再决定是否调整 RRF、候选数或 Reranker。
+当前 Conversation 会保存完整 State，没有摘要、Token Budget、裁剪、保留期限或删除 API；长对话会持续增加模型上下文和 PostgreSQL checkpoint 历史。

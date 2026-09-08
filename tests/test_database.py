@@ -3,7 +3,11 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ecommerce_ai_agent.config import Settings
-from ecommerce_ai_agent.database import build_database_url, create_database
+from ecommerce_ai_agent.database import (
+    build_checkpoint_url,
+    build_database_url,
+    create_database,
+)
 
 
 def build_settings() -> Settings:
@@ -27,6 +31,14 @@ def test_database_url_preserves_components_and_hides_password() -> None:
     assert url.username == "service_user"
     assert url.password == "p@ss:/#word"
     assert "p@ss:/#word" not in str(url)
+
+
+def test_checkpoint_url_uses_psycopg_compatible_postgresql_scheme() -> None:
+    url = build_checkpoint_url(build_settings())
+
+    assert url.drivername == "postgresql"
+    assert url.password == "p@ss:/#word"
+    assert url.render_as_string(hide_password=False).startswith("postgresql://")
 
 
 @pytest.mark.asyncio

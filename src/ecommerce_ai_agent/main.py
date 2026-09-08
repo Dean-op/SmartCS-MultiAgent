@@ -4,12 +4,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from ecommerce_ai_agent.api.errors import register_exception_handlers
 from ecommerce_ai_agent.api.v1.router import router as api_v1_router
 from ecommerce_ai_agent.business_tools import BusinessTools
 from ecommerce_ai_agent.config import Settings
-from ecommerce_ai_agent.database import Database, create_database
+from ecommerce_ai_agent.database import build_checkpoint_url, create_database
 from ecommerce_ai_agent.health import HealthChecker, build_health_checker
 from ecommerce_ai_agent.knowledge import KnowledgeBase
 from ecommerce_ai_agent.llm.client import BailianModel
@@ -28,26 +29,39 @@ def create_app(
 ) -> FastAPI:
     settings = settings or Settings()
     health_checker = health_checker or build_health_checker(settings)
-    database: Database | None = None
-    if chat_service is None:
-        try:
-            model = BailianModel(settings)
-            database = create_database(settings)
-            chat_service = ChatService(
-                model,
-                BusinessTools(database.session_factory, settings.development_user_email),
-                KnowledgeBase(settings, model),
-            )
-        except ModelConfigurationError:
-            chat_service = None
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        yield
-        if application.state.chat_service is not None:
-            await application.state.chat_service.close()
-        if application.state.database is not None:
-            await application.state.database.engine.dispose()
+        if chat_service is not None:
+            try:
+                yield
+            finally:
+                await chat_service.close()
+            return
+
+        try:
+            model = BailianModel(settings)
+        except ModelConfigurationError:
+            yield
+            return
+
+        database = create_database(settings)
+        checkpoint_dsn = build_checkpoint_url(settings).render_as_string(hide_password=False)
+        async with AsyncPostgresSaver.from_conn_string(checkpoint_dsn) as checkpointer:
+            await checkpointer.setup()
+            service = ChatService(
+                model,
+                BusinessTools(database.session_factory, settings.development_user_email),
+                KnowledgeBase(settings, model),
+                checkpointer=checkpointer,
+            )
+            application.state.chat_service = service
+            application.state.database = database
+            try:
+                yield
+            finally:
+                await service.close()
+                await database.engine.dispose()
 
     configure_logging(settings.log_level)
     logger.info(
@@ -57,7 +71,7 @@ def create_app(
     application = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        description="M9 Hybrid RAG workflow API for the e-commerce AI Agent system.",
+        description="M10 persistent conversation API for the e-commerce AI Agent system.",
         lifespan=lifespan,
         docs_url="/docs",
         openapi_url="/openapi.json",
@@ -67,7 +81,7 @@ def create_app(
         ],
     )
     application.state.chat_service = chat_service
-    application.state.database = database
+    application.state.database = None
     register_exception_handlers(application)
     application.include_router(api_v1_router)
 

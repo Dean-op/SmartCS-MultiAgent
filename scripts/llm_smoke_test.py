@@ -8,7 +8,7 @@ from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.llm.client import BailianModel
 from ecommerce_ai_agent.llm.errors import ModelError
 from ecommerce_ai_agent.llm.schemas import MessageAssessment
-from ecommerce_ai_agent.services.chat import CUSTOMER_SERVICE_SYSTEM_PROMPT
+from ecommerce_ai_agent.workflow import CUSTOMER_SERVICE_SYSTEM_PROMPT
 
 ASSESSMENT_PROMPT = """判断客户消息是否必须访问真实账户、订单、物流或退款数据才能完成。
 返回简短摘要、是否需要真实业务操作以及判断原因。"""
