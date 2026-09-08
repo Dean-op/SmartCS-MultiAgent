@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -28,10 +29,14 @@ class FakeCompletions:
         content: str | None = "ok",
         tool_calls: list[Any] | None = None,
         error: Exception | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
     ) -> None:
         self.content = content
         self.tool_calls = tool_calls
         self.error = error
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
         self.requests: list[dict[str, Any]] = []
 
     async def create(self, **kwargs: Any):
@@ -39,7 +44,13 @@ class FakeCompletions:
         if self.error is not None:
             raise self.error
         message = SimpleNamespace(content=self.content, tool_calls=self.tool_calls)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=SimpleNamespace(
+                prompt_tokens=self.prompt_tokens,
+                completion_tokens=self.completion_tokens,
+            ),
+        )
 
 
 class FakeOpenAI:
@@ -97,6 +108,30 @@ async def test_text_generation_uses_configured_model_without_tool_calling() -> N
     ]
     assert "tools" not in request
     assert "tool_choice" not in request
+
+
+@pytest.mark.asyncio
+async def test_text_generation_records_provider_token_usage_and_cost() -> None:
+    from ecommerce_ai_agent.observability import observe_request
+
+    completions = FakeCompletions(
+        content="真实模型回复",
+        prompt_tokens=100,
+        completion_tokens=25,
+    )
+    model = BailianModel(model_settings(), client=FakeOpenAI(completions))
+
+    with observe_request(
+        "request-token-usage",
+        input_price_per_million=3,
+        output_price_per_million=12,
+    ) as observation:
+        await model.generate_text("system rules", "customer message")
+
+    assert observation.model_calls == 1
+    assert observation.input_tokens == 100
+    assert observation.output_tokens == 25
+    assert observation.estimated_cost_cny == Decimal("0.0006")
 
 
 @pytest.mark.asyncio
@@ -428,6 +463,28 @@ async def test_provider_errors_are_mapped_without_leaking_details(
     assert captured.value.code == code
     assert captured.value.status_code == status_code
     assert "provider-sensitive-message" not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_failed_provider_attempt_is_counted_once() -> None:
+    from ecommerce_ai_agent.observability import observe_request
+
+    model = BailianModel(
+        model_settings(),
+        client=FakeOpenAI(FakeCompletions(error=provider_error(openai.AuthenticationError))),
+    )
+
+    with observe_request(
+        "failed-model-call",
+        input_price_per_million=3,
+        output_price_per_million=12,
+    ) as observation:
+        with pytest.raises(ModelAuthenticationError):
+            await model.generate_text("system", "user")
+
+    assert observation.model_calls == 1
+    assert observation.error_count == 1
+    assert observation.error_types == ["ModelAuthenticationError"]
 
 
 @pytest.mark.asyncio

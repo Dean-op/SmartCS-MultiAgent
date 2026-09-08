@@ -7,6 +7,7 @@ from ecommerce_ai_agent.knowledge import SearchResult
 from ecommerce_ai_agent.llm.client import ModelTurn, ToolCall
 from ecommerce_ai_agent.llm.errors import ModelProviderError
 from ecommerce_ai_agent.llm.schemas import RouteDecision, RouteName, SupervisorPlan
+from ecommerce_ai_agent.observability import observe_request
 from ecommerce_ai_agent.workflow import build_chat_workflow
 
 TEST_USER_ID = uuid4()
@@ -93,6 +94,40 @@ async def test_general_route_ends_without_exposing_or_executing_business_tools()
     assert model.turn_tools == []
     assert model.general_calls[0][1] == "你好"
     assert model.route_calls[0][2] is RouteDecision
+
+
+@pytest.mark.asyncio
+async def test_workflow_observation_records_router_agent_and_tool_execution_path() -> None:
+    call = ToolCall(
+        id="order-call",
+        name="get_current_user_order",
+        arguments='{"order_number":"EC2026080016"}',
+    )
+    graph = build_chat_workflow(
+        ScriptedModel(
+            "order",
+            ModelTurn(content=None, tool_calls=(call,)),
+            ModelTurn(content="订单已完成。", tool_calls=()),
+        ),
+        RecordingTools(),
+        FakeKnowledge([]),
+    )
+
+    with observe_request(
+        "workflow-request",
+        input_price_per_million=3,
+        output_price_per_million=12,
+    ) as observation:
+        await graph_path(graph, "查询订单")
+
+    assert observation.path == [
+        "router",
+        "order_agent",
+        "tools",
+        "tool:get_current_user_order",
+        "order_agent",
+    ]
+    assert observation.tool_calls == 1
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from ecommerce_ai_agent.llm.schemas import (
     SpecialistRoute,
     SupervisorPlan,
 )
+from ecommerce_ai_agent.observability import operation_span, record_path, record_tool_call
 
 ROUTER_PROMPT = """将用户消息分类为且仅分类为一个 route：
 order：订单状态、订单商品或物流；refund：退款记录或退款进度；
@@ -203,25 +204,27 @@ def build_chat_workflow(
         pending_review = None
         for call in calls:
             name = call["function"]["name"]
-            if name == "request_refund":
-                content = await tools.request_refund(
-                    call["function"]["arguments"],
-                    UUID(state["user_id"]),
-                    config["configurable"]["thread_id"],
-                )
-                payload = json.loads(content)
-                if payload.get("outcome") == "pending_review":
-                    pending_review = {
-                        "review_id": payload["review_id"],
-                        "refund_number": payload["refund_number"],
-                        "thread_id": payload["thread_id"],
-                    }
-            else:
-                content = await tools.run(
-                    name,
-                    call["function"]["arguments"],
-                    UUID(state["user_id"]),
-                )
+            record_tool_call(name)
+            with operation_span(f"tool.{name}", tool_name=name):
+                if name == "request_refund":
+                    content = await tools.request_refund(
+                        call["function"]["arguments"],
+                        UUID(state["user_id"]),
+                        config["configurable"]["thread_id"],
+                    )
+                    payload = json.loads(content)
+                    if payload.get("outcome") == "pending_review":
+                        pending_review = {
+                            "review_id": payload["review_id"],
+                            "refund_number": payload["refund_number"],
+                            "thread_id": payload["thread_id"],
+                        }
+                else:
+                    content = await tools.run(
+                        name,
+                        call["function"]["arguments"],
+                        UUID(state["user_id"]),
+                    )
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
         return {
             "messages": messages,
@@ -326,18 +329,31 @@ def build_chat_workflow(
             return "supervisor_final"
         return route_to_active_specialist(state)
 
+    def traced_node(name, node):
+        async def run(state: ChatState) -> ChatState:
+            record_path(name)
+            with operation_span(f"workflow.{name}", component="langgraph"):
+                return await node(state)
+
+        return run
+
+    async def traced_tools(state: ChatState, config: RunnableConfig) -> ChatState:
+        record_path("tools")
+        with operation_span("workflow.tools", component="langgraph"):
+            return await tool_node(state, config)
+
     builder = StateGraph(ChatState)
-    builder.add_node("router", router)
-    builder.add_node("order_agent", order_agent)
-    builder.add_node("refund_agent", refund_agent)
-    builder.add_node("product_agent", product_agent)
-    builder.add_node("knowledge_agent", knowledge_agent)
-    builder.add_node("general_agent", general_agent)
-    builder.add_node("supervisor", supervisor)
-    builder.add_node("supervisor_step", supervisor_step)
-    builder.add_node("supervisor_final", supervisor_final)
-    builder.add_node("tools", tool_node)
-    builder.add_node("human_review", human_review)
+    builder.add_node("router", traced_node("router", router))
+    builder.add_node("order_agent", traced_node("order_agent", order_agent))
+    builder.add_node("refund_agent", traced_node("refund_agent", refund_agent))
+    builder.add_node("product_agent", traced_node("product_agent", product_agent))
+    builder.add_node("knowledge_agent", traced_node("knowledge_agent", knowledge_agent))
+    builder.add_node("general_agent", traced_node("general_agent", general_agent))
+    builder.add_node("supervisor", traced_node("supervisor", supervisor))
+    builder.add_node("supervisor_step", traced_node("supervisor_step", supervisor_step))
+    builder.add_node("supervisor_final", traced_node("supervisor_final", supervisor_final))
+    builder.add_node("tools", traced_tools)
+    builder.add_node("human_review", traced_node("human_review", human_review))
     builder.add_edge(START, "router")
     builder.add_conditional_edges(
         "router",

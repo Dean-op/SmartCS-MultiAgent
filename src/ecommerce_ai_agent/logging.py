@@ -12,6 +12,20 @@ CONTEXT_FIELDS = (
     "outcome",
     "error_type",
     "tool_name",
+    "request_id",
+    "trace_id",
+    "span_id",
+    "execution_path",
+    "http_method",
+    "http_path",
+    "http_status_code",
+    "model_calls",
+    "tool_calls",
+    "input_tokens",
+    "output_tokens",
+    "estimated_cost_cny",
+    "error_count",
+    "error_types",
 )
 
 

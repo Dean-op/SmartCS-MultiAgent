@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     app_name: str = "ecommerce-ai-agent"
     app_env: str = "development"
     log_level: str = "INFO"
+    otel_console_exporter: bool = False
+    llm_input_price_per_million_cny: Decimal = Field(default=Decimal("3.00"), ge=0)
+    llm_output_price_per_million_cny: Decimal = Field(default=Decimal("12.00"), ge=0)
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 

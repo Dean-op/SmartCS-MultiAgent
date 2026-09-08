@@ -1,8 +1,10 @@
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -16,6 +18,13 @@ from ecommerce_ai_agent.knowledge import KnowledgeBase
 from ecommerce_ai_agent.llm.client import BailianModel
 from ecommerce_ai_agent.llm.errors import ModelConfigurationError
 from ecommerce_ai_agent.logging import configure_logging
+from ecommerce_ai_agent.observability import (
+    configure_tracing,
+    observe_request,
+    operation_span,
+    record_error,
+    trace_ids,
+)
 from ecommerce_ai_agent.services.chat import ChatService
 
 logger = logging.getLogger(__name__)
@@ -64,6 +73,7 @@ def create_app(
                 await database.engine.dispose()
 
     configure_logging(settings.log_level)
+    configure_tracing(settings.app_name, console_exporter=settings.otel_console_exporter)
     logger.info(
         "Application configured",
         extra={"environment": settings.app_env},
@@ -86,6 +96,38 @@ def create_app(
     application.state.settings = settings
     register_exception_handlers(application)
     application.include_router(api_v1_router)
+
+    @application.middleware("http")
+    async def request_observability(request: Request, call_next):
+        supplied_id = request.headers.get("x-request-id", "")
+        request_id = (
+            supplied_id if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", supplied_id) else str(uuid4())
+        )
+        with observe_request(
+            request_id,
+            input_price_per_million=settings.llm_input_price_per_million_cny,
+            output_price_per_million=settings.llm_output_price_per_million_cny,
+        ) as observation:
+            observation.http_method = request.method
+            observation.http_path = request.url.path
+            with operation_span(
+                "http.request",
+                **{
+                    "http.request.method": request.method,
+                    "url.path": request.url.path,
+                },
+            ):
+                observation.trace_id, observation.span_id = trace_ids()
+                response = await call_next(request)
+                observation.http_status_code = response.status_code
+                if response.status_code >= 400:
+                    record_error(f"HTTP{response.status_code}")
+                response.headers["x-request-id"] = request_id
+                if observation.trace_id and observation.span_id:
+                    response.headers["traceparent"] = (
+                        f"00-{observation.trace_id}-{observation.span_id}-01"
+                    )
+                return response
 
     @application.get("/health/live", tags=["health"])
     async def liveness() -> dict[str, str]:

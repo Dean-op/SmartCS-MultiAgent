@@ -20,6 +20,12 @@ from ecommerce_ai_agent.llm.errors import (
     ModelUnavailableError,
     StructuredOutputError,
 )
+from ecommerce_ai_agent.observability import (
+    operation_span,
+    record_completion_usage,
+    record_error,
+    record_model_call,
+)
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -81,12 +87,15 @@ class BailianModel:
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         started_at = perf_counter()
-        try:
-            completion = await self._complete(messages=self._messages(system_prompt, user_prompt))
-            content = self._content(completion)
-        except ModelError as exc:
-            self._log("text", started_at, "failure", type(exc).__name__)
-            raise
+        with operation_span("model.text", provider="bailian", model=self._model):
+            try:
+                completion = await self._complete(
+                    messages=self._messages(system_prompt, user_prompt)
+                )
+                content = self._content(completion)
+            except ModelError as exc:
+                self._log("text", started_at, "failure", type(exc).__name__)
+                raise
         self._log("text", started_at, "success")
         return content
 
@@ -97,25 +106,28 @@ class BailianModel:
         schema_type: type[SchemaT],
     ) -> SchemaT:
         started_at = perf_counter()
-        try:
-            schema_prompt = (
-                f"{system_prompt}\n仅输出一个 JSON 对象，不要数组或额外文字。"
-                f"JSON Schema: {json.dumps(schema_type.model_json_schema(), ensure_ascii=False)}"
-            )
-            completion = await self._complete(
-                messages=self._messages(schema_prompt, user_prompt),
-                response_format={"type": "json_object"},
-                extra_body={"enable_thinking": False},
-            )
-            content = self._content(completion)
-            result = schema_type.model_validate(json.loads(content))
-        except (json.JSONDecodeError, TypeError, ValidationError) as exc:
-            error = StructuredOutputError()
-            self._log("structured", started_at, "failure", type(error).__name__)
-            raise error from exc
-        except ModelError as exc:
-            self._log("structured", started_at, "failure", type(exc).__name__)
-            raise
+        with operation_span("model.structured", provider="bailian", model=self._model):
+            try:
+                schema_prompt = (
+                    f"{system_prompt}\n仅输出一个 JSON 对象，不要数组或额外文字。"
+                    "JSON Schema: "
+                    f"{json.dumps(schema_type.model_json_schema(), ensure_ascii=False)}"
+                )
+                completion = await self._complete(
+                    messages=self._messages(schema_prompt, user_prompt),
+                    response_format={"type": "json_object"},
+                    extra_body={"enable_thinking": False},
+                )
+                content = self._content(completion)
+                result = schema_type.model_validate(json.loads(content))
+            except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+                error = StructuredOutputError()
+                record_error(type(error).__name__)
+                self._log("structured", started_at, "failure", type(error).__name__)
+                raise error from exc
+            except ModelError as exc:
+                self._log("structured", started_at, "failure", type(exc).__name__)
+                raise
         self._log("structured", started_at, "success")
         return result
 
@@ -125,17 +137,18 @@ class BailianModel:
         tools: list[dict[str, Any]],
     ) -> ModelTurn:
         started_at = perf_counter()
-        try:
-            completion = await self._complete(
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                extra_body={"enable_thinking": False},
-            )
-            turn = self._turn(completion)
-        except ModelError as exc:
-            self._log("tools", started_at, "failure", type(exc).__name__)
-            raise
+        with operation_span("model.tools", provider="bailian", model=self._model):
+            try:
+                completion = await self._complete(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    extra_body={"enable_thinking": False},
+                )
+                turn = self._turn(completion)
+            except ModelError as exc:
+                self._log("tools", started_at, "failure", type(exc).__name__)
+                raise
         self._log("tools", started_at, "success")
         return turn
 
@@ -143,42 +156,51 @@ class BailianModel:
         if not texts:
             return []
         started_at = perf_counter()
-        try:
-            vectors: list[list[float]] = []
-            for start in range(0, len(texts), 10):
-                batch = texts[start : start + 10]
-                response = await self._client.embeddings.create(
-                    model=self._embedding_model,
-                    input=batch,
-                    dimensions=self._embedding_dimensions,
-                    encoding_format="float",
+        with operation_span("model.embedding", provider="bailian", model=self._embedding_model):
+            try:
+                vectors: list[list[float]] = []
+                for start in range(0, len(texts), 10):
+                    batch = texts[start : start + 10]
+                    response = await self._client.embeddings.create(
+                        model=self._embedding_model,
+                        input=batch,
+                        dimensions=self._embedding_dimensions,
+                        encoding_format="float",
+                    )
+                    input_tokens, output_tokens = record_completion_usage(response)
+                    record_model_call(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    )
+                    batch_vectors = [
+                        item.embedding
+                        for item in sorted(response.data, key=lambda item: item.index)
+                    ]
+                    if len(batch_vectors) != len(batch):
+                        raise ModelProviderError
+                    vectors.extend(batch_vectors)
+            except openai.APIError as exc:
+                error = self._map_error(exc)
+                record_model_call(error_type=type(error).__name__)
+                self._log(
+                    "embedding",
+                    started_at,
+                    "failure",
+                    type(error).__name__,
+                    self._embedding_model,
                 )
-                batch_vectors = [
-                    item.embedding for item in sorted(response.data, key=lambda item: item.index)
-                ]
-                if len(batch_vectors) != len(batch):
-                    raise ModelProviderError
-                vectors.extend(batch_vectors)
-        except openai.APIError as exc:
-            error = self._map_error(exc)
-            self._log(
-                "embedding",
-                started_at,
-                "failure",
-                type(error).__name__,
-                self._embedding_model,
-            )
-            raise error from exc
-        except (AttributeError, TypeError) as exc:
-            error = ModelProviderError()
-            self._log(
-                "embedding",
-                started_at,
-                "failure",
-                type(error).__name__,
-                self._embedding_model,
-            )
-            raise error from exc
+                raise error from exc
+            except (AttributeError, TypeError) as exc:
+                error = ModelProviderError()
+                record_error(type(error).__name__)
+                self._log(
+                    "embedding",
+                    started_at,
+                    "failure",
+                    type(error).__name__,
+                    self._embedding_model,
+                )
+                raise error from exc
         self._log("embedding", started_at, "success", model_name=self._embedding_model)
         return vectors
 
@@ -194,45 +216,51 @@ class BailianModel:
         if self._rerank_client is None:
             raise ModelConfigurationError
         started_at = perf_counter()
-        try:
-            response = await self._rerank_client.post(
-                "/reranks",
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                json={
-                    "model": self._rerank_model,
-                    "query": query,
-                    "documents": documents,
-                    "top_n": min(top_n, len(documents)),
-                },
-            )
-            response.raise_for_status()
-            results = [
-                RerankResult(index=int(item["index"]), score=float(item["relevance_score"]))
-                for item in response.json()["results"]
-            ]
-        except httpx.TimeoutException as exc:
-            error: ModelError = ModelTimeoutError()
-            self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
-            raise error from exc
-        except httpx.RequestError as exc:
-            error = ModelUnavailableError()
-            self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
-            raise error from exc
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (401, 403):
-                error = ModelAuthenticationError()
-            elif exc.response.status_code == 429:
-                error = ModelRateLimitError()
-            elif exc.response.status_code in (400, 404, 422):
-                error = ModelConfigurationError()
-            else:
+        with operation_span("model.rerank", provider="bailian", model=self._rerank_model):
+            try:
+                response = await self._rerank_client.post(
+                    "/reranks",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json={
+                        "model": self._rerank_model,
+                        "query": query,
+                        "documents": documents,
+                        "top_n": min(top_n, len(documents)),
+                    },
+                )
+                response.raise_for_status()
+                record_model_call()
+                results = [
+                    RerankResult(index=int(item["index"]), score=float(item["relevance_score"]))
+                    for item in response.json()["results"]
+                ]
+            except httpx.TimeoutException as exc:
+                error: ModelError = ModelTimeoutError()
+                record_model_call(error_type=type(error).__name__)
+                self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
+                raise error from exc
+            except httpx.RequestError as exc:
+                error = ModelUnavailableError()
+                record_model_call(error_type=type(error).__name__)
+                self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
+                raise error from exc
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (401, 403):
+                    error = ModelAuthenticationError()
+                elif exc.response.status_code == 429:
+                    error = ModelRateLimitError()
+                elif exc.response.status_code in (400, 404, 422):
+                    error = ModelConfigurationError()
+                else:
+                    error = ModelProviderError()
+                record_model_call(error_type=type(error).__name__)
+                self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
+                raise error from exc
+            except (KeyError, TypeError, ValueError) as exc:
                 error = ModelProviderError()
-            self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
-            raise error from exc
-        except (KeyError, TypeError, ValueError) as exc:
-            error = ModelProviderError()
-            self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
-            raise error from exc
+                record_error(type(error).__name__)
+                self._log("rerank", started_at, "failure", type(error).__name__, self._rerank_model)
+                raise error from exc
         self._log("rerank", started_at, "success", model_name=self._rerank_model)
         return results
 
@@ -243,14 +271,19 @@ class BailianModel:
 
     async def _complete(self, **request: Any) -> Any:
         try:
-            return await self._client.chat.completions.create(
+            completion = await self._client.chat.completions.create(
                 model=self._model,
                 temperature=self._temperature,
                 max_completion_tokens=self._max_completion_tokens,
                 **request,
             )
         except openai.APIError as exc:
-            raise self._map_error(exc) from exc
+            error = self._map_error(exc)
+            record_model_call(error_type=type(error).__name__)
+            raise error from exc
+        input_tokens, output_tokens = record_completion_usage(completion)
+        record_model_call(input_tokens=input_tokens, output_tokens=output_tokens)
+        return completion
 
     def _log(
         self,
@@ -283,8 +316,10 @@ class BailianModel:
         try:
             content = completion.choices[0].message.content
         except (AttributeError, IndexError, TypeError) as exc:
+            record_error("ModelProviderError")
             raise ModelProviderError from exc
         if not isinstance(content, str) or not content.strip():
+            record_error("ModelProviderError")
             raise ModelProviderError
         return content.strip()
 
@@ -302,10 +337,12 @@ class BailianModel:
                 for call in provider_calls
             )
         except (AttributeError, IndexError, TypeError) as exc:
+            record_error("ModelProviderError")
             raise ModelProviderError from exc
 
         content = message.content.strip() if isinstance(message.content, str) else None
         if not content and not tool_calls:
+            record_error("ModelProviderError")
             raise ModelProviderError
         return ModelTurn(content=content, tool_calls=tool_calls)
 

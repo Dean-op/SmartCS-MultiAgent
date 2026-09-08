@@ -122,6 +122,7 @@ services:
     env_file:
       - .env
     environment:
+      OTEL_CONSOLE_EXPORTER: ${OTEL_CONSOLE_EXPORTER:-true}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       REDIS_HOST: redis
