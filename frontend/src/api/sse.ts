@@ -37,7 +37,7 @@ export function createSseParser(onEvent: (event: SseEvent) => void) {
 }
 
 export async function streamChat(
-  payload: { message: string; conversation_id?: string },
+  payload: { message: string; conversation_id?: string; client_message_id?: string },
   onEvent: (event: SseEvent) => void,
   signal: AbortSignal,
   onHeaders?: (headers: Headers) => void,

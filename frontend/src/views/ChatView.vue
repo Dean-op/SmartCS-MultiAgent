@@ -93,7 +93,11 @@ async function send() {
   controller = new AbortController()
   try {
     await streamChat(
-      { message: content, ...(activeId.value ? { conversation_id: activeId.value } : {}) },
+      {
+        message: content,
+        client_message_id: userMessage.id,
+        ...(activeId.value ? { conversation_id: activeId.value } : {}),
+      },
       (event) => handleEvent(event, assistant),
       controller.signal,
       (headers) => {

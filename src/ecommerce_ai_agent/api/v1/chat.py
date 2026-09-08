@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from time import perf_counter
 from typing import Annotated
@@ -12,14 +13,42 @@ from ecommerce_ai_agent.api.dependencies import get_current_user
 from ecommerce_ai_agent.api.errors import ApplicationError
 from ecommerce_ai_agent.llm.errors import ModelConfigurationError, ModelError
 from ecommerce_ai_agent.models.enums import ConversationMessageStatus
-from ecommerce_ai_agent.observability import current_request_trace
-from ecommerce_ai_agent.schemas.chat import ChatRequest, ChatResponse
+from ecommerce_ai_agent.observability import current_request_trace, record_error
+from ecommerce_ai_agent.schemas.chat import AssistantMessage, ChatRequest, ChatResponse
 from ecommerce_ai_agent.schemas.error import ErrorResponse
 from ecommerce_ai_agent.services.chat import ChatService
 from ecommerce_ai_agent.services.conversation import ConversationService
 from ecommerce_ai_agent.services.data_types import UserData
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _replayed_response(turn) -> ChatResponse:
+    message = turn.assistant_message
+    if message is None or message.status in {
+        ConversationMessageStatus.PENDING,
+        ConversationMessageStatus.FAILED,
+        ConversationMessageStatus.CANCELLED,
+    }:
+        raise ApplicationError(
+            code="chat_request_in_progress",
+            message="The original chat request has no completed response",
+            status_code=409,
+        )
+    return ChatResponse(
+        conversation_id=turn.conversation_id,
+        status=(
+            "pending_review"
+            if message.status == ConversationMessageStatus.PENDING_REVIEW
+            else "completed"
+        ),
+        message=AssistantMessage(
+            id=message.id,
+            content=message.content,
+            created_at=message.created_at,
+        ),
+    )
 
 
 def _sse(event: str, data: dict) -> str:
@@ -81,7 +110,10 @@ async def chat(
     conversation_id = payload.conversation_id or uuid4()
     async with database.session_factory.begin() as session:
         turn = await ConversationService(session).start_turn(
-            current_user.id, conversation_id, payload.message
+            current_user.id,
+            conversation_id,
+            payload.message,
+            client_message_id=payload.client_message_id,
         )
     if turn is None:
         raise ApplicationError(
@@ -89,6 +121,9 @@ async def chat(
             message="Conversation not found",
             status_code=404,
         )
+    conversation_id = turn.conversation_id
+    if turn.replayed:
+        return _replayed_response(turn)
     started = perf_counter()
     try:
         response = await service.respond(
@@ -136,7 +171,10 @@ async def stream_chat(
     conversation_id = payload.conversation_id or uuid4()
     async with database.session_factory.begin() as session:
         turn = await ConversationService(session).start_turn(
-            current_user.id, conversation_id, payload.message
+            current_user.id,
+            conversation_id,
+            payload.message,
+            client_message_id=payload.client_message_id,
         )
     if turn is None:
         raise ApplicationError(
@@ -144,6 +182,8 @@ async def stream_chat(
             message="Conversation not found",
             status_code=404,
         )
+    conversation_id = turn.conversation_id
+    replayed = _replayed_response(turn) if turn.replayed else None
     request_id, trace_id = current_request_trace()
     started = perf_counter()
     stream_request = payload.model_copy(update={"conversation_id": conversation_id})
@@ -166,6 +206,8 @@ async def stream_chat(
             )
 
     async def event_stream() -> AsyncIterator[str]:
+        partial_content = ""
+        partial_reasoning = ""
         yield _sse(
             "conversation",
             {
@@ -174,6 +216,25 @@ async def stream_chat(
                 "assistant_message_id": str(turn.assistant_message_id),
             },
         )
+        if replayed is not None:
+            stored = turn.assistant_message
+            if stored and stored.reasoning_content:
+                yield _sse("reasoning_delta", {"content": stored.reasoning_content})
+            yield _sse("delta", {"content": replayed.message.content})
+            yield _sse(
+                "done",
+                {
+                    "conversation_id": str(conversation_id),
+                    "assistant_message_id": str(turn.assistant_message_id),
+                    "status": replayed.status,
+                    "reasoning_content": stored.reasoning_content if stored else "",
+                    "content": replayed.message.content,
+                    "latency_ms": stored.latency_ms if stored else None,
+                    "created_at": replayed.message.created_at.isoformat(),
+                    "replayed": True,
+                },
+            )
+            return
         try:
             async for event in _with_heartbeats(
                 service.stream_events(stream_request, current_user.id)
@@ -183,7 +244,13 @@ async def stream_chat(
                     continue
                 if event["event"] == "conversation":
                     continue
+                if event["event"] == "reasoning_delta":
+                    partial_reasoning += str(event.get("content", ""))
+                elif event["event"] == "delta":
+                    partial_content += str(event.get("content", ""))
                 if event["event"] == "done":
+                    partial_content = event["content"]
+                    partial_reasoning = event.get("reasoning_content") or ""
                     event["latency_ms"] = round((perf_counter() - started) * 1000, 2)
                     message_status = (
                         ConversationMessageStatus.PENDING_REVIEW
@@ -201,10 +268,22 @@ async def stream_chat(
                     event["event"], {key: value for key, value in event.items() if key != "event"}
                 )
         except asyncio.CancelledError:
-            await persist("", None, ConversationMessageStatus.CANCELLED)
+            await persist(
+                partial_content,
+                partial_reasoning or None,
+                ConversationMessageStatus.CANCELLED,
+                round((perf_counter() - started) * 1000, 2),
+            )
             raise
         except ModelError as exc:
-            await persist("", None, ConversationMessageStatus.FAILED)
+            record_error(type(exc).__name__)
+            logger.warning("SSE chat failed", extra={"error_type": type(exc).__name__})
+            await persist(
+                partial_content,
+                partial_reasoning or None,
+                ConversationMessageStatus.FAILED,
+                round((perf_counter() - started) * 1000, 2),
+            )
             yield _sse(
                 "error",
                 {
@@ -213,8 +292,15 @@ async def stream_chat(
                     "retryable": exc.status_code >= 500,
                 },
             )
-        except Exception:
-            await persist("", None, ConversationMessageStatus.FAILED)
+        except Exception as exc:
+            record_error(type(exc).__name__)
+            logger.exception("SSE chat failed", extra={"error_type": type(exc).__name__})
+            await persist(
+                partial_content,
+                partial_reasoning or None,
+                ConversationMessageStatus.FAILED,
+                round((perf_counter() - started) * 1000, 2),
+            )
             yield _sse(
                 "error",
                 {

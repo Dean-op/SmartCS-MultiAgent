@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ecommerce_ai_agent.models import Conversation, ConversationMessage
+from ecommerce_ai_agent.models.enums import ConversationMessageStatus
 
 
 class ConversationRepository:
@@ -31,10 +32,21 @@ class ConversationRepository:
         result = await self._session.scalars(
             select(ConversationMessage)
             .where(ConversationMessage.conversation_id == conversation_id)
-            .order_by(ConversationMessage.created_at, ConversationMessage.id)
+            .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
             .limit(limit)
         )
-        return list(result.all())
+        return list(reversed(result.all()))
+
+    async def latest_pending_review(self, conversation_id: UUID) -> ConversationMessage | None:
+        return await self._session.scalar(
+            select(ConversationMessage)
+            .where(
+                ConversationMessage.conversation_id == conversation_id,
+                ConversationMessage.status == ConversationMessageStatus.PENDING_REVIEW,
+            )
+            .order_by(ConversationMessage.created_at.desc())
+            .limit(1)
+        )
 
     def add(self, value: Conversation | ConversationMessage) -> None:
         self._session.add(value)

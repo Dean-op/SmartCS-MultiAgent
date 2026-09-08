@@ -153,6 +153,7 @@ async def rebuild_knowledge(
     async with lock:
         async with request.app.state.database.session_factory() as session:
             documents = await KnowledgeDocumentService(session).list()
+        snapshot = {document.id: document.content_hash for document in documents}
         chunks = [
             chunk
             for document in documents
@@ -160,7 +161,7 @@ async def rebuild_knowledge(
         ]
         count = await knowledge.ingest(chunks, rebuild=True)
         async with request.app.state.database.session_factory.begin() as session:
-            await KnowledgeDocumentService(session).mark_all_indexed()
+            await KnowledgeDocumentService(session).mark_indexed(snapshot)
     return KnowledgeRebuildResponse(
         documents=len(documents),
         chunks=count,

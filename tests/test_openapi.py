@@ -52,7 +52,7 @@ async def test_openapi_describes_versioned_chat_contract_and_error_responses() -
         }
 
     request_properties = schema["components"]["schemas"]["ChatRequest"]["properties"]
-    assert set(request_properties) == {"message", "conversation_id"}
+    assert set(request_properties) == {"message", "conversation_id", "client_message_id"}
     mode_schema = schema["components"]["schemas"]["ChatResponse"]["properties"]["mode"]
     assert mode_schema["const"] == "llm"
 

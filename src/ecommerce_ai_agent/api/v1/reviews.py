@@ -10,6 +10,7 @@ from ecommerce_ai_agent.models.enums import ReviewStatus
 from ecommerce_ai_agent.schemas.chat import ChatResponse
 from ecommerce_ai_agent.schemas.review import PendingReviewResponse, ReviewActionRequest
 from ecommerce_ai_agent.services.chat import ChatService
+from ecommerce_ai_agent.services.conversation import ConversationService
 from ecommerce_ai_agent.services.data_types import UserData
 from ecommerce_ai_agent.services.refund import RefundService
 
@@ -58,13 +59,18 @@ async def _resolve_review(
             message="Review workflow cannot be resumed",
             status_code=status.HTTP_409_CONFLICT,
         ) from exc
-    return await chat_service.resume_review(
+    response = await chat_service.resume_review(
         review.thread_id,
         conversation_id,
         decision,
         admin.id,
         payload.note,
     )
+    async with request.app.state.database.session_factory.begin() as session:
+        await ConversationService(session).resolve_pending_review(
+            conversation_id, response.message.content
+        )
+    return response
 
 
 @router.post("/{review_id}/approve", response_model=ChatResponse)

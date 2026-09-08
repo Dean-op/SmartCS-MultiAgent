@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,8 @@ class ConversationTurn:
     conversation_id: UUID
     user_message_id: UUID
     assistant_message_id: UUID
+    replayed: bool = False
+    assistant_message: ConversationMessageData | None = None
 
 
 class ConversationService:
@@ -22,12 +24,41 @@ class ConversationService:
         self._repository = ConversationRepository(session)
 
     async def start_turn(
-        self, user_id: UUID, conversation_id: UUID, content: str
+        self,
+        user_id: UUID,
+        conversation_id: UUID,
+        content: str,
+        *,
+        client_message_id: UUID | None = None,
     ) -> ConversationTurn | None:
         now = datetime.now(UTC)
         conversation = await self._repository.get(conversation_id)
         if conversation is not None and conversation.user_id != user_id:
             return None
+        if client_message_id is not None:
+            existing = await self._repository.get_message(client_message_id)
+            if existing is not None:
+                stored_conversation = await self._repository.get(existing.conversation_id)
+                if (
+                    stored_conversation is None
+                    or stored_conversation.user_id != user_id
+                    or existing.role != ConversationMessageRole.USER
+                    or existing.content != content
+                ):
+                    return None
+                assistant_id = uuid5(client_message_id, "assistant")
+                assistant = await self._repository.get_message(assistant_id)
+                return ConversationTurn(
+                    existing.conversation_id,
+                    existing.id,
+                    assistant_id,
+                    replayed=True,
+                    assistant_message=(
+                        ConversationMessageData.model_validate(assistant)
+                        if assistant is not None
+                        else None
+                    ),
+                )
         if conversation is None:
             conversation = Conversation(
                 id=conversation_id,
@@ -42,6 +73,7 @@ class ConversationService:
             conversation.last_message_preview = content.strip()[:200]
             conversation.updated_at = now
         user_message = ConversationMessage(
+            id=client_message_id or uuid4(),
             conversation_id=conversation_id,
             role=ConversationMessageRole.USER,
             content=content,
@@ -49,6 +81,7 @@ class ConversationService:
             created_at=now,
         )
         assistant_message = ConversationMessage(
+            id=uuid5(client_message_id, "assistant") if client_message_id else uuid4(),
             conversation_id=conversation_id,
             role=ConversationMessageRole.ASSISTANT,
             content="",
@@ -59,6 +92,19 @@ class ConversationService:
         self._repository.add(assistant_message)
         await self._repository.flush()
         return ConversationTurn(conversation_id, user_message.id, assistant_message.id)
+
+    async def resolve_pending_review(self, conversation_id: UUID, content: str) -> bool:
+        message = await self._repository.latest_pending_review(conversation_id)
+        if message is None:
+            return False
+        message.content = content
+        message.status = ConversationMessageStatus.COMPLETED
+        conversation = await self._repository.get(conversation_id)
+        if conversation is not None:
+            conversation.last_message_preview = content.strip()[:200]
+            conversation.updated_at = datetime.now(UTC)
+        await self._repository.flush()
+        return True
 
     async def complete_assistant(
         self,

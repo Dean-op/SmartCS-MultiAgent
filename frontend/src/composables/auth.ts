@@ -25,6 +25,8 @@ function logout() {
   setToken(null)
 }
 
+window.addEventListener('auth:expired', logout)
+
 export const auth = {
   token: readonly(token),
   user: readonly(user),

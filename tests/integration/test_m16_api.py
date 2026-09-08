@@ -1,24 +1,33 @@
+import asyncio
+import json
 import logging
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from pydantic import SecretStr
+from starlette.requests import Request
 
+from ecommerce_ai_agent.api.v1.chat import stream_chat
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.health import HealthChecker
 from ecommerce_ai_agent.knowledge import SearchResult
 from ecommerce_ai_agent.main import create_app
 from ecommerce_ai_agent.observability import record_model_call
-from ecommerce_ai_agent.schemas.chat import AssistantMessage, ChatResponse
+from ecommerce_ai_agent.schemas.chat import AssistantMessage, ChatRequest, ChatResponse
 from ecommerce_ai_agent.seed import seed_id
 from ecommerce_ai_agent.services.conversation import ConversationService
+from ecommerce_ai_agent.services.user import UserService
 from tests.integration.conftest import IntegrationDatabase
 
 
 class FakeChat:
+    def __init__(self) -> None:
+        self.respond_calls = 0
+
     async def respond(self, request, user_id):
+        self.respond_calls += 1
         return ChatResponse(
             conversation_id=request.conversation_id or uuid4(),
             message=AssistantMessage(id=uuid4(), content="ok", created_at=datetime.now(UTC)),
@@ -33,6 +42,10 @@ class FakeChat:
         yield {"event": "status", "phase": "router", "name": "general"}
         yield {"event": "reasoning_delta", "content": "先理解"}
         yield {"event": "delta", "content": "你好"}
+        if request.message == "触发取消":
+            await asyncio.Event().wait()
+        if request.message == "触发流错误":
+            raise RuntimeError("sensitive stream failure")
         yield {
             "event": "done",
             "conversation_id": str(request.conversation_id),
@@ -61,9 +74,11 @@ def build_app(database: IntegrationDatabase):
         postgres_password=SecretStr("test-password"),
         jwt_secret=SecretStr("integration-secret-at-least-32-bytes-long"),
     )
-    app = create_app(settings=settings, health_checker=HealthChecker({}), chat_service=FakeChat())
+    chat = FakeChat()
+    app = create_app(settings=settings, health_checker=HealthChecker({}), chat_service=chat)
     app.state.database = database.database
     app.state.knowledge_base = FakeKnowledge()
+    app.state.fake_chat = chat
     return app
 
 
@@ -237,3 +252,102 @@ async def test_request_observation_finishes_after_sse_body(caplog, seeded_databa
     assert record.model_calls == 1
     assert record.input_tokens == 10
     assert record.output_tokens == 2
+
+
+@pytest.mark.asyncio
+async def test_sse_error_is_observed_and_preserves_partial_output(caplog, seeded_database) -> None:
+    app = build_app(seeded_database)
+    transport = httpx.ASGITransport(app=app)
+    with caplog.at_level(logging.INFO):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            access_token = await token(client, "alice@example.com", "customer-password")
+            response = await client.post(
+                "/api/v1/chat/stream",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json={"message": "触发流错误"},
+            )
+            conversation_line = next(
+                line for line in response.text.splitlines() if '"conversation_id"' in line
+            )
+            conversation_id = conversation_line.split('"conversation_id":"')[1].split('"')[0]
+            history = await client.get(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+    assistant = history.json()["items"][-1]
+    assert "event: error" in response.text
+    assert assistant["content"] == "你好"
+    assert assistant["reasoning_content"] == "先理解"
+    assert assistant["status"] == "failed"
+    assert any(record.message == "SSE chat failed" for record in caplog.records)
+    summary = next(
+        record
+        for record in caplog.records
+        if record.message == "Request completed" and record.http_path == "/api/v1/chat/stream"
+    )
+    assert summary.error_count == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_client_message_id_replays_without_second_model_call(
+    seeded_database: IntegrationDatabase,
+) -> None:
+    app = build_app(seeded_database)
+    transport = httpx.ASGITransport(app=app)
+    conversation_id = uuid4()
+    client_message_id = uuid4()
+    payload = {
+        "message": "幂等消息",
+        "conversation_id": str(conversation_id),
+        "client_message_id": str(client_message_id),
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        access_token = await token(client, "alice@example.com", "customer-password")
+        headers = {"Authorization": f"Bearer {access_token}"}
+        first = await client.post("/api/v1/chat", headers=headers, json=payload)
+        second = await client.post(
+            "/api/v1/chat",
+            headers=headers,
+            json={"message": "幂等消息", "client_message_id": str(client_message_id)},
+        )
+        history = await client.get(
+            f"/api/v1/conversations/{conversation_id}/messages", headers=headers
+        )
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["message"]["id"] == second.json()["message"]["id"]
+    assert app.state.fake_chat.respond_calls == 1
+    assert len(history.json()["items"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_cancelled_sse_persists_partial_reasoning_and_answer(
+    seeded_database: IntegrationDatabase,
+) -> None:
+    app = build_app(seeded_database)
+    async with seeded_database.session_factory() as session:
+        user = await UserService(session).get_user_by_email("alice@example.com")
+    assert user is not None
+    request = Request({"type": "http", "app": app, "headers": []})
+    response = await stream_chat(
+        ChatRequest(message="触发取消"), request, app.state.fake_chat, user
+    )
+    iterator = response.body_iterator.__aiter__()
+    first_chunk = await anext(iterator)
+    conversation_id = json.loads(first_chunk.split("data: ", 1)[1])["conversation_id"]
+    for _ in range(3):
+        await anext(iterator)
+    pending = asyncio.create_task(anext(iterator))
+    await asyncio.sleep(0.01)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    async with seeded_database.session_factory() as session:
+        messages = await ConversationService(session).list_messages(user.id, UUID(conversation_id))
+
+    assert messages is not None
+    assert messages[-1].content == "你好"
+    assert messages[-1].reasoning_content == "先理解"
+    assert messages[-1].status.value == "cancelled"

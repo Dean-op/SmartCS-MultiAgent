@@ -54,7 +54,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, { ...init, headers })
   if (!response.ok) {
     const payload = await response.json().catch(() => null)
-    if (response.status === 401) setToken(null)
+    if (response.status === 401) {
+      setToken(null)
+      window.dispatchEvent(new Event('auth:expired'))
+    }
     throw new ApiError(
       response.status,
       payload?.error?.code ?? 'http_error',

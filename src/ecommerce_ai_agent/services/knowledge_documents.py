@@ -80,8 +80,14 @@ class KnowledgeDocumentService:
         return True
 
     async def mark_all_indexed(self) -> None:
+        documents = await self._repository.list()
+        await self.mark_indexed({document.id: document.content_hash for document in documents})
+
+    async def mark_indexed(self, snapshot: dict[UUID, str]) -> None:
         indexed_at = datetime.now(UTC)
         for document in await self._repository.list():
-            document.indexed_hash = document.content_hash
-            document.indexed_at = indexed_at
+            indexed_hash = snapshot.get(document.id)
+            if indexed_hash is not None and document.content_hash == indexed_hash:
+                document.indexed_hash = indexed_hash
+                document.indexed_at = indexed_at
         await self._repository.flush()

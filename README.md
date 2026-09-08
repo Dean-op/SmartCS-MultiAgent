@@ -265,7 +265,7 @@ curl -X POST http://localhost:8000/api/v1/chat \
   -d '{"message":"我的订单 EC2026080016 现在是什么状态？"}'
 ```
 
-`conversation_id` 可选；回传相同 UUID 会恢复同一用户的 LangGraph Thread。内部 `thread_id` 为 `{user_id}:{conversation_id}`，不同用户和会话相互隔离。
+`conversation_id` 可选；回传相同 UUID 会恢复同一用户的 LangGraph Thread。Vue 还会为每条用户消息生成 `client_message_id`：网络重试时服务端直接复用已保存结果，不会重复调用模型或 Tool。内部 `thread_id` 为 `{user_id}:{conversation_id}`，不同用户和会话相互隔离。
 
 ## Observability
 

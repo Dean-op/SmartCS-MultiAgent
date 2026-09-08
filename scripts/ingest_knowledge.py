@@ -19,6 +19,7 @@ async def run() -> int:
     try:
         async with database.session_factory() as session:
             documents = await KnowledgeDocumentService(session).list()
+        snapshot = {document.id: document.content_hash for document in documents}
         chunks = [
             chunk
             for document in documents
@@ -26,7 +27,7 @@ async def run() -> int:
         ]
         count = await knowledge.ingest(chunks, rebuild=True)
         async with database.session_factory.begin() as session:
-            await KnowledgeDocumentService(session).mark_all_indexed()
+            await KnowledgeDocumentService(session).mark_indexed(snapshot)
     except ModelError as exc:
         print(f"Knowledge ingestion failed: {exc.code}", file=sys.stderr)
         return 1

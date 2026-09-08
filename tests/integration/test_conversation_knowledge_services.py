@@ -1,8 +1,13 @@
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
-from ecommerce_ai_agent.models.enums import ConversationMessageStatus
+from ecommerce_ai_agent.models import Conversation, ConversationMessage
+from ecommerce_ai_agent.models.enums import (
+    ConversationMessageRole,
+    ConversationMessageStatus,
+)
 from ecommerce_ai_agent.seed import seed_id
 from ecommerce_ai_agent.services.conversation import ConversationService
 from ecommerce_ai_agent.services.knowledge_documents import KnowledgeDocumentService
@@ -74,3 +79,116 @@ async def test_knowledge_document_service_tracks_content_needing_rebuild(
         service = KnowledgeDocumentService(session)
         assert await service.delete(document.id)
         assert await service.get(document.id) is None
+
+
+@pytest.mark.asyncio
+async def test_history_returns_the_latest_two_hundred_messages_in_display_order(
+    seeded_database: IntegrationDatabase,
+) -> None:
+    conversation_id = uuid4()
+    user_id = seed_id("user:alice@example.com")
+    started = datetime.now(UTC)
+    async with seeded_database.session_factory.begin() as session:
+        session.add(
+            Conversation(
+                id=conversation_id,
+                user_id=user_id,
+                title="长会话",
+                last_message_preview="message-201",
+            )
+        )
+        session.add_all(
+            [
+                ConversationMessage(
+                    conversation_id=conversation_id,
+                    role=ConversationMessageRole.USER,
+                    content=f"message-{index}",
+                    status=ConversationMessageStatus.COMPLETED,
+                    created_at=started + timedelta(microseconds=index),
+                )
+                for index in range(202)
+            ]
+        )
+
+    async with seeded_database.session_factory() as session:
+        messages = await ConversationService(session).list_messages(user_id, conversation_id)
+
+    assert messages is not None
+    assert len(messages) == 200
+    assert messages[0].content == "message-2"
+    assert messages[-1].content == "message-201"
+
+
+@pytest.mark.asyncio
+async def test_client_message_id_replays_existing_turn_without_duplicate_rows(
+    seeded_database: IntegrationDatabase,
+) -> None:
+    conversation_id = uuid4()
+    client_message_id = uuid4()
+    user_id = seed_id("user:alice@example.com")
+    async with seeded_database.session_factory.begin() as session:
+        service = ConversationService(session)
+        first = await service.start_turn(
+            user_id,
+            conversation_id,
+            "同一条消息",
+            client_message_id=client_message_id,
+        )
+        second = await service.start_turn(
+            user_id,
+            conversation_id,
+            "同一条消息",
+            client_message_id=client_message_id,
+        )
+
+    async with seeded_database.session_factory() as session:
+        messages = await ConversationService(session).list_messages(user_id, conversation_id)
+
+    assert first is not None and second is not None
+    assert second.replayed
+    assert second.user_message_id == first.user_message_id
+    assert second.assistant_message_id == first.assistant_message_id
+    assert messages is not None and len(messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_review_resolution_replaces_pending_history_message(
+    seeded_database: IntegrationDatabase,
+) -> None:
+    conversation_id = uuid4()
+    user_id = seed_id("user:alice@example.com")
+    async with seeded_database.session_factory.begin() as session:
+        service = ConversationService(session)
+        turn = await service.start_turn(user_id, conversation_id, "申请退款")
+        assert turn is not None
+        await service.complete_assistant(
+            turn.assistant_message_id,
+            content="正在等待人工审核",
+            reasoning_content=None,
+            status=ConversationMessageStatus.PENDING_REVIEW,
+        )
+        await service.resolve_pending_review(conversation_id, "退款已通过人工审核")
+
+    async with seeded_database.session_factory() as session:
+        messages = await ConversationService(session).list_messages(user_id, conversation_id)
+
+    assert messages is not None
+    assert messages[-1].content == "退款已通过人工审核"
+    assert messages[-1].status == ConversationMessageStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_rebuild_snapshot_does_not_mark_concurrently_edited_document_indexed(
+    seeded_database: IntegrationDatabase,
+) -> None:
+    async with seeded_database.session_factory.begin() as session:
+        service = KnowledgeDocumentService(session)
+        document = await service.create("竞态测试", "race-policy.md", "# 旧内容")
+        snapshot_hash = document.content_hash
+        await service.update(document.id, "竞态测试", "race-policy.md", "# 新内容")
+        await service.mark_indexed({document.id: snapshot_hash})
+        current = await service.get(document.id)
+
+    assert current is not None
+    assert not current.is_indexed
+    assert current.indexed_hash is None
