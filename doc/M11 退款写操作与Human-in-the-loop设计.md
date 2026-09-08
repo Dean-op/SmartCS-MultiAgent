@@ -92,7 +92,7 @@ Low Risk → AUTO_APPROVE；否则 → MANUAL_REVIEW。
 
 ### human_reviews
 
-- `thread_id VARCHAR(64) NULL`
+- `thread_id VARCHAR(80) NULL`
 - Index：`thread_id`
 
 现有 Seed 为 NULL。新人工退款审核保存 conversation/thread UUID，使 Review API 能恢复对应 Graph。
