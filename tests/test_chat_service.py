@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 
-from ecommerce_ai_agent.llm.client import ModelTurn, ToolCall
+from ecommerce_ai_agent.llm.client import ModelTurn, StreamedText, ToolCall
 from ecommerce_ai_agent.llm.errors import ModelProviderError
 from ecommerce_ai_agent.llm.schemas import RouteName
 from ecommerce_ai_agent.schemas.chat import ChatRequest
@@ -38,6 +38,14 @@ class RecordingModel:
     ) -> ModelTurn:
         self.calls.append((messages.copy(), tools))
         return self.turns.pop(0)
+
+    async def stream_text(self, system_prompt, user_prompt, emit) -> StreamedText:
+        emit("reasoning_delta", "先理解用户问题")
+        emit("delta", self.general_text)
+        return StreamedText(self.general_text, "先理解用户问题")
+
+    async def stream_messages(self, messages, emit) -> StreamedText:
+        return await self.stream_text("", "", emit)
 
     async def close(self) -> None:
         self.closed = True
@@ -130,6 +138,38 @@ async def test_chat_service_allows_direct_answer_without_tool_execution() -> Non
     assert response.message.content == "你好！"
     assert tools.calls == []
     assert model.calls == []
+
+
+@pytest.mark.asyncio
+async def test_chat_service_streams_custom_events_and_final_payload() -> None:
+    conversation_id = uuid4()
+    service = ChatService(
+        RecordingModel(route="general", general_text="你好！"),
+        RecordingTools(),
+        FakeKnowledge(),
+    )
+
+    events = [
+        event
+        async for event in service.stream_events(
+            ChatRequest(message="你好", conversation_id=conversation_id), TEST_USER_ID
+        )
+    ]
+
+    assert events[0] == {
+        "event": "conversation",
+        "conversation_id": str(conversation_id),
+    }
+    assert {event["event"] for event in events} >= {
+        "conversation",
+        "status",
+        "reasoning_delta",
+        "delta",
+        "done",
+    }
+    assert events[-1]["content"] == "你好！"
+    assert events[-1]["reasoning_content"] == "先理解用户问题"
+    assert events[-1]["status"] == "completed"
 
 
 @pytest.mark.asyncio

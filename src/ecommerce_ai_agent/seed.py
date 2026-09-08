@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from hashlib import sha256
+from pathlib import Path
 from uuid import UUID, uuid5
 
 from sqlalchemy import func, select, update
@@ -8,7 +10,16 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ecommerce_ai_agent.auth import hash_password
-from ecommerce_ai_agent.models import HumanReview, Order, OrderItem, Product, Refund, Shipment, User
+from ecommerce_ai_agent.models import (
+    HumanReview,
+    KnowledgeDocument,
+    Order,
+    OrderItem,
+    Product,
+    Refund,
+    Shipment,
+    User,
+)
 from ecommerce_ai_agent.models.enums import (
     OrderStatus,
     PaymentStatus,
@@ -55,10 +66,33 @@ class SeedCounts:
     shipments: int
     refunds: int
     reviews: int
+    knowledge_documents: int
 
 
 def seed_id(key: str) -> UUID:
     return uuid5(SEED_NAMESPACE, key)
+
+
+def build_knowledge_rows() -> list[dict]:
+    knowledge_directory = Path(__file__).resolve().parents[2] / "knowledge"
+    rows = []
+    for path in sorted(knowledge_directory.glob("*.md")):
+        content = path.read_text(encoding="utf-8").strip()
+        title = content.splitlines()[0].lstrip("# ").strip() or path.stem
+        rows.append(
+            {
+                "id": seed_id(f"knowledge:{path.name}"),
+                "title": title,
+                "source": path.name,
+                "content": content,
+                "content_hash": sha256(content.encode()).hexdigest(),
+                "indexed_hash": None,
+                "indexed_at": None,
+                "created_at": SEED_EPOCH,
+                "updated_at": SEED_EPOCH,
+            }
+        )
+    return rows
 
 
 def order_state(index: int) -> tuple[OrderStatus, PaymentStatus]:
@@ -281,6 +315,10 @@ async def seed_database(session: AsyncSession) -> SeedCounts:
     ):
         await insert_seed_rows(session, model, rows[key])
 
+    knowledge_rows = build_knowledge_rows()
+    if knowledge_rows:
+        await insert_seed_rows(session, KnowledgeDocument, knowledge_rows)
+
     for email, password in (
         ("alice@example.com", "customer-password"),
         ("admin@example.com", "admin-password"),
@@ -298,4 +336,5 @@ async def seed_database(session: AsyncSession) -> SeedCounts:
         shipments=await count_rows(session, Shipment),
         refunds=await count_rows(session, Refund),
         reviews=await count_rows(session, HumanReview),
+        knowledge_documents=await count_rows(session, KnowledgeDocument),
     )

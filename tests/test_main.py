@@ -21,7 +21,9 @@ async def failing_probe() -> None:
     raise ConnectionError
 
 
-def build_app(*, redis_probe: Probe = healthy_probe):  # type annotation follows production API
+def build_app(
+    *, redis_probe: Probe = healthy_probe, frontend_directory=None
+):  # type annotation follows production API
     settings = Settings(_env_file=None, postgres_password=SecretStr("test-password"))
     checker = HealthChecker(
         {
@@ -30,7 +32,11 @@ def build_app(*, redis_probe: Probe = healthy_probe):  # type annotation follows
             "milvus": healthy_probe,
         }
     )
-    return create_app(settings=settings, health_checker=checker)
+    return create_app(
+        settings=settings,
+        health_checker=checker,
+        frontend_directory=frontend_directory,
+    )
 
 
 @pytest.mark.asyncio
@@ -41,6 +47,21 @@ async def test_liveness_reports_api_process_is_alive() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "alive"}
+
+
+@pytest.mark.asyncio
+async def test_application_serves_built_vue_frontend(tmp_path) -> None:
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<title>Vue M16</title>", encoding="utf-8")
+    (tmp_path / "assets" / "app.js").write_text("console.log('m16')", encoding="utf-8")
+    transport = httpx.ASGITransport(app=build_app(frontend_directory=tmp_path))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        page = await client.get("/")
+        asset = await client.get("/assets/app.js")
+
+    assert page.status_code == 200
+    assert "Vue M16" in page.text
+    assert asset.status_code == 200
 
 
 @pytest.mark.asyncio

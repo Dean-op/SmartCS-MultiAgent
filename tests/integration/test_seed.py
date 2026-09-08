@@ -18,7 +18,15 @@ async def test_seed_is_idempotent_and_covers_required_business_scenarios(
     async with test_database.session_factory.begin() as session:
         second_counts = await seed_database(session)
 
-    expected = SeedCounts(users=6, products=12, orders=24, shipments=12, refunds=5, reviews=3)
+    expected = SeedCounts(
+        users=6,
+        products=12,
+        orders=24,
+        shipments=12,
+        refunds=5,
+        reviews=3,
+        knowledge_documents=8,
+    )
     assert first_counts == expected
     assert second_counts == expected
 

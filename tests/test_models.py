@@ -5,6 +5,8 @@ from sqlalchemy import Enum as SqlEnum
 
 from ecommerce_ai_agent.models import Base
 from ecommerce_ai_agent.models.enums import (
+    ConversationMessageRole,
+    ConversationMessageStatus,
     OrderStatus,
     PaymentStatus,
     RefundStatus,
@@ -22,6 +24,9 @@ EXPECTED_TABLES = {
     "shipments",
     "refunds",
     "human_reviews",
+    "conversations",
+    "conversation_messages",
+    "knowledge_documents",
 }
 
 
@@ -43,12 +48,20 @@ def foreign_key_target(table_name: str, column_name: str) -> str:
     return next(iter(column.foreign_keys)).target_fullname
 
 
-def test_metadata_contains_only_the_seven_m2_business_tables() -> None:
+def test_metadata_contains_business_conversation_and_knowledge_tables() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES
 
 
 def test_business_statuses_are_finite_and_use_stable_database_values() -> None:
     assert enum_values(UserRole) == {"customer", "admin"}
+    assert enum_values(ConversationMessageRole) == {"user", "assistant"}
+    assert enum_values(ConversationMessageStatus) == {
+        "pending",
+        "completed",
+        "pending_review",
+        "failed",
+        "cancelled",
+    }
     assert enum_values(OrderStatus) == {
         "pending_payment",
         "processing",

@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -38,6 +39,8 @@ class ChatService:
                 "messages": [{"role": "user", "content": request.message}],
                 "tool_used": False,
                 "user_id": str(user_id),
+                "stream_response": False,
+                "reasoning_content": "",
             },
             {"configurable": {"thread_id": thread_id}},
         )
@@ -56,6 +59,66 @@ class ChatService:
         if not isinstance(content, str) or not content.strip():
             raise ModelProviderError
         return self._response(conversation_id, content.strip())
+
+    async def stream_events(
+        self, request: ChatRequest, user_id: UUID
+    ) -> AsyncIterator[dict[str, Any]]:
+        conversation_id = request.conversation_id or uuid4()
+        thread_id = f"{user_id}:{conversation_id}"
+        yield {"event": "conversation", "conversation_id": str(conversation_id)}
+        content = ""
+        reasoning = ""
+        pending = None
+        async for part in self._workflow.astream(
+            {
+                "messages": [{"role": "user", "content": request.message}],
+                "tool_used": False,
+                "user_id": str(user_id),
+                "stream_response": True,
+                "reasoning_content": "",
+            },
+            {"configurable": {"thread_id": thread_id}},
+            stream_mode=["updates", "custom"],
+            version="v2",
+        ):
+            if part["type"] == "custom":
+                yield part["data"]
+                continue
+            if part["type"] != "updates":
+                continue
+            for node, update in part["data"].items():
+                if node == "__interrupt__":
+                    interrupts = update
+                    if interrupts:
+                        pending = interrupts[0].value
+                    continue
+                if not isinstance(update, dict):
+                    continue
+                if "reasoning_content" in update:
+                    reasoning = update["reasoning_content"] or ""
+                messages = update.get("messages") or []
+                if messages:
+                    candidate = messages[-1].get("content")
+                    if isinstance(candidate, str) and candidate.strip():
+                        content = candidate.strip()
+        status = "completed"
+        if pending:
+            status = "pending_review"
+            content = (
+                f"退款申请 {pending['refund_number']} 已提交，正在等待人工审核"
+                f"（审核编号：{pending['review_id']}）。"
+            )
+            yield {"event": "delta", "content": content}
+        if not content:
+            raise ModelProviderError
+        yield {
+            "event": "done",
+            "conversation_id": str(conversation_id),
+            "status": status,
+            "reasoning_content": reasoning,
+            "content": content,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
 
     async def resume_review(
         self,

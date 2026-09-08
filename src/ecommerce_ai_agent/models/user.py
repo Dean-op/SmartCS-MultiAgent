@@ -12,6 +12,7 @@ from ecommerce_ai_agent.models.enums import UserRole
 from ecommerce_ai_agent.models.types import database_enum
 
 if TYPE_CHECKING:
+    from ecommerce_ai_agent.models.conversation import Conversation
     from ecommerce_ai_agent.models.order import Order
     from ecommerce_ai_agent.models.refund import HumanReview
 
@@ -41,4 +42,7 @@ class User(TimestampMixin, Base):
         back_populates="reviewer",
         foreign_keys="HumanReview.reviewer_id",
         lazy="raise",
+    )
+    conversations: Mapped[list[Conversation]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", lazy="raise"
     )

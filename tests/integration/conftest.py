@@ -27,6 +27,9 @@ EXPECTED_TABLES = {
     "shipments",
     "refunds",
     "human_reviews",
+    "conversations",
+    "conversation_messages",
+    "knowledge_documents",
 }
 EXPECTED_ENUMS = {
     "user_role",
@@ -36,6 +39,8 @@ EXPECTED_ENUMS = {
     "refund_status",
     "review_status",
     "review_priority",
+    "conversation_message_role",
+    "conversation_message_status",
 }
 
 

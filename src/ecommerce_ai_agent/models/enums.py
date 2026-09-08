@@ -47,3 +47,16 @@ class ReviewStatus(StrEnum):
 class ReviewPriority(StrEnum):
     NORMAL = "normal"
     HIGH = "high"
+
+
+class ConversationMessageRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class ConversationMessageStatus(StrEnum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    PENDING_REVIEW = "pending_review"
+    FAILED = "failed"
+    CANCELLED = "cancelled"

@@ -1,4 +1,5 @@
 import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -6,11 +7,13 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("ecommerce_ai_agent")
@@ -156,3 +159,63 @@ def trace_ids() -> tuple[str | None, str | None]:
     if not context.is_valid:
         return None, None
     return f"{context.trace_id:032x}", f"{context.span_id:016x}"
+
+
+def current_request_trace() -> tuple[str | None, str | None]:
+    observation = _current_observation.get()
+    if observation is None:
+        return None, None
+    return observation.request_id, observation.trace_id
+
+
+class RequestObservabilityMiddleware:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        input_price_per_million: Decimal,
+        output_price_per_million: Decimal,
+    ) -> None:
+        self.app = app
+        self.input_price = input_price_per_million
+        self.output_price = output_price_per_million
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        supplied_id = headers.get(b"x-request-id", b"").decode(errors="ignore")
+        request_id = (
+            supplied_id if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", supplied_id) else str(uuid4())
+        )
+        with observe_request(
+            request_id,
+            input_price_per_million=self.input_price,
+            output_price_per_million=self.output_price,
+        ) as observation:
+            observation.http_method = scope["method"]
+            observation.http_path = scope["path"]
+            with operation_span(
+                "http.request",
+                **{
+                    "http.request.method": scope["method"],
+                    "url.path": scope["path"],
+                },
+            ):
+                observation.trace_id, observation.span_id = trace_ids()
+
+                async def send_observed(message: Message) -> None:
+                    if message["type"] == "http.response.start":
+                        observation.http_status_code = message["status"]
+                        if message["status"] >= 400:
+                            record_error(f"HTTP{message['status']}")
+                        response_headers = list(message.get("headers", []))
+                        response_headers.append((b"x-request-id", request_id.encode()))
+                        if observation.trace_id and observation.span_id:
+                            traceparent = f"00-{observation.trace_id}-{observation.span_id}-01"
+                            response_headers.append((b"traceparent", traceparent.encode()))
+                        message["headers"] = response_headers
+                    await send(message)
+
+                await self.app(scope, receive, send_observed)

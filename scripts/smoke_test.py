@@ -61,6 +61,10 @@ def run_smoke_test(base_url: str, wait_seconds: float) -> None:
             if docs_status != 200 or "Swagger UI" not in docs_body:
                 raise RuntimeError(f"Swagger UI is unavailable: {docs_status}")
 
+            frontend_status, frontend_body = fetch_text(f"{base_url}/")
+            if frontend_status != 200 or "智服台" not in frontend_body:
+                raise RuntimeError(f"Vue frontend is unavailable: {frontend_status}")
+
             unauthenticated_status, unauthenticated_payload = fetch_json(
                 f"{base_url}/api/v1/chat",
                 method="POST",
@@ -71,7 +75,7 @@ def run_smoke_test(base_url: str, wait_seconds: float) -> None:
             if unauthenticated_payload.get("error", {}).get("code") != "http_error":
                 raise RuntimeError(f"unexpected authentication error: {unauthenticated_payload}")
 
-            print("M15 base smoke passed: dependencies, Swagger, and Chat auth are ready.")
+            print("M16 base smoke passed: dependencies, Vue, Swagger, and Chat auth are ready.")
             return
         except (OSError, ValueError, RuntimeError, urllib.error.HTTPError) as exc:
             last_error = f"{type(exc).__name__}: {exc}"

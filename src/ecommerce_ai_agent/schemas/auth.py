@@ -1,4 +1,8 @@
+from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from ecommerce_ai_agent.models.enums import UserRole
 
 
 class LoginRequest(BaseModel):
@@ -12,3 +16,9 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+
+
+class UserProfileResponse(BaseModel):
+    id: UUID
+    email: str
+    role: UserRole

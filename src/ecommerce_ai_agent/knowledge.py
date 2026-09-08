@@ -34,22 +34,36 @@ def chunk_markdown_documents(
     chunks: list[KnowledgeChunk] = []
     for path in sorted(directory.glob("*.md")):
         text = path.read_text(encoding="utf-8").strip()
-        sections = re.split(r"(?m)(?=^## )", text)
-        if len(sections) > 1:
-            title = sections[0].strip()
-            sections = [f"{title}\n\n{section.strip()}" for section in sections[1:]]
-        index = 0
-        for section in sections:
-            start = 0
-            while start < len(section):
-                content = section[start : start + chunk_size].strip()
-                if content:
-                    digest = sha256(f"{path.name}:{index}:{content}".encode()).hexdigest()
-                    chunks.append(KnowledgeChunk(digest, path.name, content))
-                    index += 1
-                if start + chunk_size >= len(section):
-                    break
-                start += chunk_size - overlap
+        chunks.extend(chunk_markdown_text(path.name, text, chunk_size=chunk_size, overlap=overlap))
+    return chunks
+
+
+def chunk_markdown_text(
+    source: str,
+    text: str,
+    *,
+    chunk_size: int = 600,
+    overlap: int = 80,
+) -> list[KnowledgeChunk]:
+    if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
+        raise ValueError("chunk_size must be positive and overlap must be smaller")
+    sections = re.split(r"(?m)(?=^## )", text.strip())
+    if len(sections) > 1:
+        title = sections[0].strip()
+        sections = [f"{title}\n\n{section.strip()}" for section in sections[1:]]
+    chunks: list[KnowledgeChunk] = []
+    index = 0
+    for section in sections:
+        start = 0
+        while start < len(section):
+            content = section[start : start + chunk_size].strip()
+            if content:
+                digest = sha256(f"{source}:{index}:{content}".encode()).hexdigest()
+                chunks.append(KnowledgeChunk(digest, source, content))
+                index += 1
+            if start + chunk_size >= len(section):
+                break
+            start += chunk_size - overlap
     return chunks
 
 
@@ -93,6 +107,8 @@ class KnowledgeBase:
 
     async def ingest(self, chunks: list[KnowledgeChunk], *, rebuild: bool = False) -> int:
         if not chunks:
+            if rebuild:
+                await asyncio.to_thread(self._ensure_collection, True)
             return 0
         vectors = await self._model.embed_texts([chunk.content for chunk in chunks])
         if len(vectors) != len(chunks):

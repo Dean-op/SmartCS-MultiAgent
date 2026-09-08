@@ -8,6 +8,7 @@ import pytest
 from pydantic import SecretStr
 
 from ecommerce_ai_agent.api.dependencies import get_current_user
+from ecommerce_ai_agent.api.v1.chat import _with_heartbeats
 from ecommerce_ai_agent.config import Settings
 from ecommerce_ai_agent.health import HealthChecker
 from ecommerce_ai_agent.llm.client import ModelTurn
@@ -46,6 +47,20 @@ class FakeKnowledge:
 
     async def close(self) -> None:
         return None
+
+
+@pytest.mark.asyncio
+async def test_sse_heartbeat_does_not_cancel_slow_event_source() -> None:
+    import asyncio
+
+    async def slow_source():
+        await asyncio.sleep(0.02)
+        yield {"event": "done"}
+
+    output = [item async for item in _with_heartbeats(slow_source(), seconds=0.005)]
+
+    assert output.count(None) >= 2
+    assert output[-1] == {"event": "done"}
 
 
 def build_test_app():

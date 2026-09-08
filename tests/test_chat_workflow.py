@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 
 from ecommerce_ai_agent.knowledge import SearchResult
-from ecommerce_ai_agent.llm.client import ModelTurn, ToolCall
+from ecommerce_ai_agent.llm.client import ModelTurn, StreamedText, ToolCall
 from ecommerce_ai_agent.llm.errors import ModelProviderError
 from ecommerce_ai_agent.llm.schemas import RouteDecision, RouteName, SupervisorPlan
 from ecommerce_ai_agent.observability import observe_request
@@ -79,6 +79,47 @@ async def graph_updates(graph, message: str) -> list[dict[str, Any]]:
 
 async def graph_path(graph, message: str) -> list[str]:
     return [next(iter(update)) for update in await graph_updates(graph, message)]
+
+
+@pytest.mark.asyncio
+async def test_general_route_streams_status_reasoning_and_answer_custom_events() -> None:
+    class StreamingModel(ScriptedModel):
+        async def stream_text(self, system_prompt, user_prompt, emit):
+            emit("reasoning_delta", "先判断问候")
+            emit("delta", "你好")
+            return StreamedText(content="你好", reasoning_content="先判断问候")
+
+    graph = build_chat_workflow(StreamingModel("general"), RecordingTools(), FakeKnowledge([]))
+
+    parts = [
+        part
+        async for part in graph.astream(
+            {
+                "messages": [{"role": "user", "content": "你好"}],
+                "user_id": str(TEST_USER_ID),
+                "stream_response": True,
+                "reasoning_content": "",
+            },
+            stream_mode=["updates", "custom"],
+            version="v2",
+        )
+    ]
+    custom = [part["data"] for part in parts if part["type"] == "custom"]
+
+    assert custom == [
+        {"event": "status", "phase": "workflow", "name": "router"},
+        {"event": "status", "phase": "router", "name": "general"},
+        {"event": "status", "phase": "workflow", "name": "general_agent"},
+        {"event": "reasoning_delta", "content": "先判断问候"},
+        {"event": "delta", "content": "你好"},
+    ]
+    final_update = next(
+        part["data"]["general_agent"]
+        for part in parts
+        if part["type"] == "updates" and "general_agent" in part["data"]
+    )
+    assert final_update["messages"][-1]["content"] == "你好"
+    assert final_update["reasoning_content"] == "先判断问候"
 
 
 @pytest.mark.asyncio

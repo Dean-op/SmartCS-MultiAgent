@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, TypeVar
@@ -50,6 +51,12 @@ class RerankResult:
     score: float
 
 
+@dataclass(frozen=True)
+class StreamedText:
+    content: str
+    reasoning_content: str
+
+
 class BailianModel:
     def __init__(
         self,
@@ -98,6 +105,66 @@ class BailianModel:
                 raise
         self._log("text", started_at, "success")
         return content
+
+    async def stream_text(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        emit: Callable[[str, str], None],
+    ) -> StreamedText:
+        return await self.stream_messages(self._messages(system_prompt, user_prompt), emit)
+
+    async def stream_messages(
+        self,
+        messages: list[dict[str, Any]],
+        emit: Callable[[str, str], None],
+    ) -> StreamedText:
+        started_at = perf_counter()
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        input_tokens = output_tokens = 0
+        with operation_span("model.stream", provider="bailian", model=self._model):
+            try:
+                stream = await self._client.chat.completions.create(
+                    model=self._model,
+                    temperature=self._temperature,
+                    max_completion_tokens=self._max_completion_tokens,
+                    messages=messages,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    extra_body={"enable_thinking": True},
+                )
+                async for chunk in stream:
+                    usage_input, usage_output = record_completion_usage(chunk)
+                    input_tokens = usage_input or input_tokens
+                    output_tokens = usage_output or output_tokens
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    delta = chunk.choices[0].delta
+                    reasoning = getattr(delta, "reasoning_content", None)
+                    content = getattr(delta, "content", None)
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                        emit("reasoning_delta", reasoning)
+                    if content:
+                        content_parts.append(content)
+                        emit("delta", content)
+            except openai.APIError as exc:
+                error = self._map_error(exc)
+                record_model_call(error_type=type(error).__name__)
+                self._log("stream", started_at, "failure", type(error).__name__)
+                raise error from exc
+            except (AttributeError, TypeError) as exc:
+                record_model_call(error_type="ModelProviderError")
+                self._log("stream", started_at, "failure", "ModelProviderError")
+                raise ModelProviderError from exc
+        content = "".join(content_parts).strip()
+        if not content:
+            record_model_call(error_type="ModelProviderError")
+            raise ModelProviderError
+        record_model_call(input_tokens=input_tokens, output_tokens=output_tokens)
+        self._log("stream", started_at, "success")
+        return StreamedText(content=content, reasoning_content="".join(reasoning_parts).strip())
 
     async def generate_structured(
         self,

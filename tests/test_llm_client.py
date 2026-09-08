@@ -135,6 +135,73 @@ async def test_text_generation_records_provider_token_usage_and_cost() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_text_separates_reasoning_answer_and_records_usage() -> None:
+    from ecommerce_ai_agent.observability import observe_request
+
+    class Stream:
+        def __init__(self) -> None:
+            self.chunks = iter(
+                [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(reasoning_content="先查询", content=None)
+                            )
+                        ],
+                        usage=None,
+                    ),
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(reasoning_content=None, content="订单已完成")
+                            )
+                        ],
+                        usage=None,
+                    ),
+                    SimpleNamespace(
+                        choices=[],
+                        usage=SimpleNamespace(prompt_tokens=120, completion_tokens=30),
+                    ),
+                ]
+            )
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.chunks)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    class StreamingCompletions(FakeCompletions):
+        async def create(self, **kwargs):
+            self.requests.append(kwargs)
+            return Stream()
+
+    completions = StreamingCompletions()
+    model = BailianModel(model_settings(), client=FakeOpenAI(completions))
+    events = []
+
+    with observe_request(
+        "stream-call", input_price_per_million=3, output_price_per_million=12
+    ) as observation:
+        result = await model.stream_text(
+            "system", "user", lambda kind, text: events.append((kind, text))
+        )
+
+    assert result.reasoning_content == "先查询"
+    assert result.content == "订单已完成"
+    assert events == [("reasoning_delta", "先查询"), ("delta", "订单已完成")]
+    assert completions.requests[0]["stream"] is True
+    assert completions.requests[0]["stream_options"] == {"include_usage": True}
+    assert completions.requests[0]["extra_body"] == {"enable_thinking": True}
+    assert observation.model_calls == 1
+    assert observation.input_tokens == 120
+    assert observation.output_tokens == 30
+
+
+@pytest.mark.asyncio
 async def test_tool_turn_returns_model_tool_calls_and_preserves_arguments() -> None:
     provider_tool_call = SimpleNamespace(
         id="call-order-1",

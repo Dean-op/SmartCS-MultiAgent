@@ -5,6 +5,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from ecommerce_ai_agent.models.enums import (
+    ConversationMessageRole,
+    ConversationMessageStatus,
     OrderStatus,
     PaymentStatus,
     RefundStatus,
@@ -93,3 +95,37 @@ class OrderData(ServiceData):
     items: tuple[OrderItemData, ...]
     shipment: ShipmentData | None
     refunds: tuple[RefundData, ...]
+
+
+class ConversationData(ServiceData):
+    id: UUID
+    title: str
+    last_message_preview: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationMessageData(ServiceData):
+    id: UUID
+    conversation_id: UUID
+    role: ConversationMessageRole
+    content: str
+    reasoning_content: str | None
+    status: ConversationMessageStatus
+    request_id: str | None
+    trace_id: str | None
+    latency_ms: float | None
+    created_at: datetime
+
+
+class KnowledgeDocumentData(ServiceData):
+    id: UUID
+    title: str
+    source: str
+    content: str
+    content_hash: str
+    indexed_hash: str | None
+    indexed_at: datetime | None
+    is_indexed: bool
+    created_at: datetime
+    updated_at: datetime

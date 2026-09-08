@@ -16,6 +16,7 @@ async def run() -> None:
             "Seed data ready: "
             f"users={counts.users}, products={counts.products}, orders={counts.orders}, "
             f"shipments={counts.shipments}, refunds={counts.refunds}, reviews={counts.reviews}"
+            f", knowledge_documents={counts.knowledge_documents}"
         )
     finally:
         await database.engine.dispose()

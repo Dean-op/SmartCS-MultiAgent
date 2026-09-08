@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
@@ -69,6 +70,8 @@ class ChatState(TypedDict):
     tool_used: NotRequired[bool]
     user_id: NotRequired[str]
     pending_review: NotRequired[dict[str, str] | None]
+    stream_response: NotRequired[bool]
+    reasoning_content: NotRequired[str]
 
 
 def _user_message(state: ChatState) -> str:
@@ -125,15 +128,38 @@ def build_chat_workflow(
     *,
     checkpointer: Any | None = None,
 ):
+    def emit(event: str, **payload: str) -> None:
+        get_stream_writer()({"event": event, **payload})
+
+    async def streamed_text(system_prompt: str, user_prompt: str):
+        return await model.stream_text(
+            system_prompt,
+            user_prompt,
+            lambda event, content: emit(event, content=content),
+        )
+
+    async def streamed_messages(messages: list[dict[str, Any]]):
+        return await model.stream_messages(
+            messages,
+            lambda event, content: emit(event, content=content),
+        )
+
     async def router(state: ChatState) -> dict[str, RouteName]:
         decision = await model.generate_structured(
             ROUTER_PROMPT,
             _router_context(state),
             RouteDecision,
         )
+        emit("status", phase="router", name=decision.route)
         return {"route": decision.route}
 
     async def general_agent(state: ChatState) -> ChatState:
+        if state.get("stream_response"):
+            result = await streamed_text(CUSTOMER_SERVICE_SYSTEM_PROMPT, _user_message(state))
+            return {
+                "messages": [{"role": "assistant", "content": result.content}],
+                "reasoning_content": result.reasoning_content,
+            }
         content = await model.generate_text(
             CUSTOMER_SERVICE_SYSTEM_PROMPT,
             _user_message(state),
@@ -154,6 +180,12 @@ def build_chat_workflow(
         }
 
     async def order_agent(state: ChatState) -> ChatState:
+        if state.get("stream_response") and state.get("tool_used"):
+            result = await streamed_messages(_agent_messages(state, ORDER_AGENT_PROMPT))
+            return {
+                "messages": [{"role": "assistant", "content": result.content}],
+                "reasoning_content": result.reasoning_content,
+            }
         turn = await model.generate_turn(
             _agent_messages(state, ORDER_AGENT_PROMPT),
             ORDER_TOOLS,
@@ -161,6 +193,12 @@ def build_chat_workflow(
         return {"messages": [_assistant_message(state, turn)]}
 
     async def refund_agent(state: ChatState) -> ChatState:
+        if state.get("stream_response") and state.get("tool_used"):
+            result = await streamed_messages(_agent_messages(state, REFUND_AGENT_PROMPT))
+            return {
+                "messages": [{"role": "assistant", "content": result.content}],
+                "reasoning_content": result.reasoning_content,
+            }
         turn = await model.generate_turn(
             _agent_messages(state, REFUND_AGENT_PROMPT),
             REFUND_TOOLS,
@@ -168,6 +206,12 @@ def build_chat_workflow(
         return {"messages": [_assistant_message(state, turn)]}
 
     async def product_agent(state: ChatState) -> ChatState:
+        if state.get("stream_response") and state.get("tool_used"):
+            result = await streamed_messages(_agent_messages(state, PRODUCT_AGENT_PROMPT))
+            return {
+                "messages": [{"role": "assistant", "content": result.content}],
+                "reasoning_content": result.reasoning_content,
+            }
         turn = await model.generate_turn(
             _agent_messages(state, PRODUCT_AGENT_PROMPT),
             PRODUCT_TOOLS,
@@ -177,16 +221,29 @@ def build_chat_workflow(
     async def knowledge_agent(state: ChatState) -> ChatState:
         results = await knowledge.search(_user_message(state))
         if not results:
-            return {"messages": [{"role": "assistant", "content": "知识库中没有找到足够依据。"}]}
+            content = "知识库中没有找到足够依据。"
+            if state.get("stream_response"):
+                emit("delta", content=content)
+            return {"messages": [{"role": "assistant", "content": content}]}
         context = "\n\n".join(
             f"[{result.source}#{result.chunk_id}]\n{result.content}" for result in results
         )
-        answer = await model.generate_text(
-            KNOWLEDGE_AGENT_PROMPT,
-            f"问题：{_user_message(state)}\n\n知识库片段：\n{context}",
-        )
+        prompt = f"问题：{_user_message(state)}\n\n知识库片段：\n{context}"
+        reasoning = ""
+        if state.get("stream_response"):
+            result = await streamed_text(KNOWLEDGE_AGENT_PROMPT, prompt)
+            answer = result.content
+            reasoning = result.reasoning_content
+        else:
+            answer = await model.generate_text(KNOWLEDGE_AGENT_PROMPT, prompt)
         sources = "、".join(dict.fromkeys(result.source for result in results))
-        return {"messages": [{"role": "assistant", "content": f"{answer}\n\n来源：{sources}"}]}
+        suffix = f"\n\n来源：{sources}"
+        if state.get("stream_response"):
+            emit("delta", content=suffix)
+        return {
+            "messages": [{"role": "assistant", "content": f"{answer}{suffix}"}],
+            "reasoning_content": reasoning,
+        }
 
     async def tool_node(state: ChatState, config: RunnableConfig) -> ChatState:
         match _active_specialist(state):
@@ -206,6 +263,7 @@ def build_chat_workflow(
         pending_review = None
         for call in calls:
             name = call["function"]["name"]
+            emit("status", phase="tool", name=name)
             record_tool_call(name)
             with operation_span(f"tool.{name}", tool_name=name):
                 if name == "request_refund":
@@ -274,10 +332,14 @@ def build_chat_workflow(
         results = "\n".join(
             f"{agent}: {result}" for agent, result in state["agent_results"].items()
         )
-        content = await model.generate_text(
-            SUPERVISOR_FINAL_PROMPT,
-            f"原始请求：{_user_message(state)}\nSpecialist 结果：\n{results}",
-        )
+        prompt = f"原始请求：{_user_message(state)}\nSpecialist 结果：\n{results}"
+        if state.get("stream_response"):
+            result = await streamed_text(SUPERVISOR_FINAL_PROMPT, prompt)
+            return {
+                "messages": [{"role": "assistant", "content": result.content}],
+                "reasoning_content": result.reasoning_content,
+            }
+        content = await model.generate_text(SUPERVISOR_FINAL_PROMPT, prompt)
         return {"messages": [{"role": "assistant", "content": content}]}
 
     def route_after_router(state: ChatState) -> RouteName:
@@ -334,6 +396,7 @@ def build_chat_workflow(
     def traced_node(name, node):
         async def run(state: ChatState) -> ChatState:
             record_path(name)
+            emit("status", phase="workflow", name=name)
             with operation_span(f"workflow.{name}", component="langgraph"):
                 return await node(state)
 
@@ -341,6 +404,7 @@ def build_chat_workflow(
 
     async def traced_tools(state: ChatState, config: RunnableConfig) -> ChatState:
         record_path("tools")
+        emit("status", phase="workflow", name="tools")
         with operation_span("workflow.tools", component="langgraph"):
             return await tool_node(state, config)
 

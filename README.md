@@ -1,6 +1,6 @@
 # ecommerce-ai-agent
 
-一个从第一性原理逐步构建的电商 Multi-Agent 智能客服学习项目。当前已完成 M0～M15：真实模型、业务 Tool、LangGraph 编排、混合 RAG、多轮持久化、退款 Human-in-the-loop、JWT、Agent Evaluation 和最小 Observability 均已形成可运行闭环。
+一个从第一性原理逐步构建的电商 Multi-Agent 智能客服学习项目。当前已完成 M0～M16：真实模型、业务 Tool、LangGraph 编排、混合 RAG、多轮持久化、退款 Human-in-the-loop、JWT、Agent Evaluation、Observability 和 Vue 图形界面均已形成可运行闭环。
 
 ## 系统能力
 
@@ -15,6 +15,9 @@
 - HS256 JWT、customer/admin 最小角色边界
 - 20 条 Agent Evaluation 与 12 条 Retrieval Evaluation
 - OpenTelemetry 手动 Trace、路径、Latency、Token、调用次数、Error 与成本估算
+- Vue 3 + TypeScript 用户端、知识库管理端和退款审核页
+- SSE 实时输出 Router/Agent/Tool 状态、模型推理过程和最终 Markdown 回答
+- PostgreSQL 会话列表、历史消息、推理内容与知识文档管理
 
 项目刻意不包含 Kubernetes、微服务、OAuth、Refresh Token、复杂 RBAC、消息队列、长期记忆、生产监控平台或支付网关。
 
@@ -154,6 +157,11 @@ docker compose ps
 
 API 容器启动时会幂等执行 `alembic upgrade head` 和 SQL Seed，然后启动 Uvicorn。PostgreSQL、Redis、etcd、MinIO、Milvus 使用命名卷；普通 `down/up` 不丢数据。
 
+启动完成后直接访问：
+
+- Vue 用户端与管理端：<http://localhost:8000/>
+- Swagger：<http://localhost:8000/docs>
+
 首次使用 Knowledge Agent 时显式入库（会调用真实 Embedding 并重建学习用 Collection）：
 
 ```bash
@@ -200,6 +208,26 @@ uv run python scripts/refund_smoke_test.py
 - customer：`alice@example.com / customer-password`
 - admin：`admin@example.com / admin-password`
 
+## Vue 前端
+
+前端位于 `frontend/`，开发模式会将 `/api` 与 `/health` 代理到 FastAPI：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+质量与构建命令：
+
+```bash
+npm test
+npm run typecheck
+npm run build
+```
+
+用户端支持 SSE 流式回答、可折叠推理过程、会话列表和历史消息；admin 额外拥有知识文档 Markdown 编辑、索引重建、Retrieval Playground 与退款审核页面。JWT 只存放在当前标签页的 `sessionStorage`。
+
 ## API
 
 主要端点：
@@ -208,7 +236,15 @@ uv run python scripts/refund_smoke_test.py
 GET  /health/live
 GET  /health/ready
 POST /api/v1/auth/login
+GET  /api/v1/auth/me
 POST /api/v1/chat
+POST /api/v1/chat/stream
+GET  /api/v1/conversations
+GET  /api/v1/conversations/{conversation_id}/messages
+GET  /api/v1/knowledge/documents
+POST /api/v1/knowledge/documents
+POST /api/v1/knowledge/rebuild
+POST /api/v1/knowledge/search
 GET  /api/v1/reviews/pending
 POST /api/v1/reviews/{review_id}/approve
 POST /api/v1/reviews/{review_id}/reject
@@ -310,7 +346,8 @@ uv run python scripts/evaluate_agents.py
 
 ## 当前限制
 
-- 会话保存完整 State，没有摘要、裁剪、保留期限或删除 API。
+- 会话提供最近50个列表和每个会话最近200条历史，但没有摘要、裁剪、删除或归档 API。
+- 推理内容来自 Provider `reasoning_content`，仅供学习展示，不作为可验证事实或重新送回模型。
 - JWT 没有 Refresh Token、OAuth、撤销列表或复杂 RBAC。
 - 退款规则是学习用固定阈值，没有真实支付网关、对账或 ML 风控。
 - Supervisor 只做顺序执行，没有并行、Replanning 或 Reflection。

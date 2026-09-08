@@ -1,7 +1,11 @@
-from fastapi import APIRouter, HTTPException, Request, status
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from ecommerce_ai_agent.api.dependencies import get_current_user
 from ecommerce_ai_agent.auth import create_access_token
-from ecommerce_ai_agent.schemas.auth import LoginRequest, TokenResponse
+from ecommerce_ai_agent.schemas.auth import LoginRequest, TokenResponse, UserProfileResponse
+from ecommerce_ai_agent.services.data_types import UserData
 from ecommerce_ai_agent.services.user import UserService
 
 router = APIRouter(prefix="/auth")
@@ -20,4 +24,15 @@ async def login(payload: LoginRequest, request: Request) -> TokenResponse:
     return TokenResponse(
         access_token=token,
         expires_in=request.app.state.settings.jwt_access_token_expire_minutes * 60,
+    )
+
+
+@router.get("/me", response_model=UserProfileResponse)
+async def me(
+    current_user: Annotated[UserData, Depends(get_current_user)],
+) -> UserProfileResponse:
+    return UserProfileResponse(
+        id=current_user.id,
+        email=current_user.email,
+        role=current_user.role,
     )
