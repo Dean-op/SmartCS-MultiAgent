@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-SourceName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9-]+\.md$")]
+SourceName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9-]+\.(?:md|pdf)$")]
 
 
 class KnowledgeDocumentWrite(BaseModel):

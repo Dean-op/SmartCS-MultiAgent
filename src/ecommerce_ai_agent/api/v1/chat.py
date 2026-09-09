@@ -22,6 +22,23 @@ from ecommerce_ai_agent.services.data_types import UserData
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+SAFETY_REFUSAL = "抱歉，该内容未通过安全审核，无法展示或执行。"
+
+
+async def _review_text(request: Request, text: str, *, output: bool = False) -> str:
+    safety = getattr(request.app.state, "safety_service", None)
+    if safety is None:
+        return text
+    result = await safety.review(text)
+    if result.action == "block":
+        if output:
+            return SAFETY_REFUSAL
+        raise ApplicationError(
+            code="unsafe_content",
+            message="The request was blocked by content safety policy",
+            status_code=400,
+        )
+    return result.text
 
 
 def _replayed_response(turn) -> ChatResponse:
@@ -55,6 +72,11 @@ def _sse(event: str, data: dict) -> str:
     return (
         f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
     )
+
+
+def _chunks(text: str, size: int = 64):
+    for start in range(0, len(text), size):
+        yield text[start : start + size]
 
 
 async def _with_heartbeats(
@@ -104,6 +126,7 @@ async def chat(
     service: Annotated[ChatService, Depends(get_chat_service)],
     current_user: Annotated[UserData, Depends(get_current_user)],
 ) -> ChatResponse:
+    payload = payload.model_copy(update={"message": await _review_text(request, payload.message)})
     database = request.app.state.database
     if database is None:
         return await service.respond(payload, current_user.id)
@@ -123,7 +146,11 @@ async def chat(
         )
     conversation_id = turn.conversation_id
     if turn.replayed:
-        return _replayed_response(turn)
+        replayed = _replayed_response(turn)
+        replayed.message.content = await _review_text(
+            request, replayed.message.content, output=True
+        )
+        return replayed
     started = perf_counter()
     try:
         response = await service.respond(
@@ -138,6 +165,7 @@ async def chat(
                 status=ConversationMessageStatus.FAILED,
             )
         raise
+    response.message.content = await _review_text(request, response.message.content, output=True)
     request_id, trace_id = current_request_trace()
     message_status = (
         ConversationMessageStatus.PENDING_REVIEW
@@ -165,6 +193,7 @@ async def stream_chat(
     service: Annotated[ChatService, Depends(get_chat_service)],
     current_user: Annotated[UserData, Depends(get_current_user)],
 ) -> StreamingResponse:
+    payload = payload.model_copy(update={"message": await _review_text(request, payload.message)})
     database = request.app.state.database
     if database is None:
         raise ModelConfigurationError
@@ -218,17 +247,29 @@ async def stream_chat(
         )
         if replayed is not None:
             stored = turn.assistant_message
-            if stored and stored.reasoning_content:
-                yield _sse("reasoning_delta", {"content": stored.reasoning_content})
-            yield _sse("delta", {"content": replayed.message.content})
+            safe_reasoning = (
+                await _review_text(request, stored.reasoning_content, output=True)
+                if stored and stored.reasoning_content
+                else ""
+            )
+            safe_content = await _review_text(request, replayed.message.content, output=True)
+            if safe_reasoning:
+                yield _sse("reasoning_delta", {"content": safe_reasoning})
+            yield _sse("delta", {"content": safe_content})
+            await persist(
+                safe_content,
+                safe_reasoning or None,
+                stored.status if stored else ConversationMessageStatus.COMPLETED,
+                stored.latency_ms if stored else None,
+            )
             yield _sse(
                 "done",
                 {
                     "conversation_id": str(conversation_id),
                     "assistant_message_id": str(turn.assistant_message_id),
                     "status": replayed.status,
-                    "reasoning_content": stored.reasoning_content if stored else "",
-                    "content": replayed.message.content,
+                    "reasoning_content": safe_reasoning,
+                    "content": safe_content,
                     "latency_ms": stored.latency_ms if stored else None,
                     "created_at": replayed.message.created_at.isoformat(),
                     "replayed": True,
@@ -246,11 +287,24 @@ async def stream_chat(
                     continue
                 if event["event"] == "reasoning_delta":
                     partial_reasoning += str(event.get("content", ""))
+                    continue
                 elif event["event"] == "delta":
                     partial_content += str(event.get("content", ""))
+                    continue
                 if event["event"] == "done":
                     partial_content = event["content"]
                     partial_reasoning = event.get("reasoning_content") or ""
+                    yield _sse("status", {"phase": "safety", "name": "output_review"})
+                    safe_reasoning = (
+                        await _review_text(request, partial_reasoning, output=True)
+                        if partial_reasoning
+                        else ""
+                    )
+                    safe_content = await _review_text(request, partial_content, output=True)
+                    partial_reasoning = safe_reasoning
+                    partial_content = safe_content
+                    event["reasoning_content"] = safe_reasoning
+                    event["content"] = safe_content
                     event["latency_ms"] = round((perf_counter() - started) * 1000, 2)
                     message_status = (
                         ConversationMessageStatus.PENDING_REVIEW
@@ -264,13 +318,25 @@ async def stream_chat(
                         event["latency_ms"],
                     )
                     event["assistant_message_id"] = str(turn.assistant_message_id)
+                    for chunk in _chunks(safe_reasoning):
+                        yield _sse("reasoning_delta", {"content": chunk})
+                    for chunk in _chunks(safe_content):
+                        yield _sse("delta", {"content": chunk})
                 yield _sse(
                     event["event"], {key: value for key, value in event.items() if key != "event"}
                 )
         except asyncio.CancelledError:
+            safe_reasoning = (
+                await _review_text(request, partial_reasoning, output=True)
+                if partial_reasoning
+                else ""
+            )
+            safe_content = (
+                await _review_text(request, partial_content, output=True) if partial_content else ""
+            )
             await persist(
-                partial_content,
-                partial_reasoning or None,
+                safe_content,
+                safe_reasoning or None,
                 ConversationMessageStatus.CANCELLED,
                 round((perf_counter() - started) * 1000, 2),
             )
@@ -278,9 +344,17 @@ async def stream_chat(
         except ModelError as exc:
             record_error(type(exc).__name__)
             logger.warning("SSE chat failed", extra={"error_type": type(exc).__name__})
+            safe_reasoning = (
+                await _review_text(request, partial_reasoning, output=True)
+                if partial_reasoning
+                else ""
+            )
+            safe_content = (
+                await _review_text(request, partial_content, output=True) if partial_content else ""
+            )
             await persist(
-                partial_content,
-                partial_reasoning or None,
+                safe_content,
+                safe_reasoning or None,
                 ConversationMessageStatus.FAILED,
                 round((perf_counter() - started) * 1000, 2),
             )
@@ -295,9 +369,17 @@ async def stream_chat(
         except Exception as exc:
             record_error(type(exc).__name__)
             logger.exception("SSE chat failed", extra={"error_type": type(exc).__name__})
+            safe_reasoning = (
+                await _review_text(request, partial_reasoning, output=True)
+                if partial_reasoning
+                else ""
+            )
+            safe_content = (
+                await _review_text(request, partial_content, output=True) if partial_content else ""
+            )
             await persist(
-                partial_content,
-                partial_reasoning or None,
+                safe_content,
+                safe_reasoning or None,
                 ConversationMessageStatus.FAILED,
                 round((perf_counter() - started) * 1000, 2),
             )

@@ -27,5 +27,5 @@ def test_base_smoke_accepts_authentication_as_the_chat_boundary(monkeypatch, cap
 
     smoke_test.run_smoke_test("http://test", wait_seconds=0.02)
 
-    assert "M16 base smoke passed" in capsys.readouterr().out
+    assert "M17 base smoke passed" in capsys.readouterr().out
     assert "http://test/" in text_urls

@@ -72,14 +72,23 @@ async function search() {
   })).items
 }
 
-function importFile(event: Event) {
+async function importFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
-  if (!file || !selected.value) return
-  file.text().then((content) => {
-    if (!selected.value) return
-    selected.value.content = content
-    selected.value.source = file.name.toLowerCase().replace(/[^a-z0-9.-]+/g, '-')
-  })
+  if (!file) return
+  if (file.name.toLowerCase().endsWith('.pdf')) {
+    const body = new FormData()
+    body.append('file', file)
+    selected.value = await api<KnowledgeDocument>('/api/v1/knowledge/documents/pdf', {
+      method: 'POST', body,
+    })
+    message.value = 'PDF 已解析为 Markdown，请检查内容并重建知识库。'
+    await load()
+    return
+  }
+  if (!selected.value) createNew()
+  if (!selected.value) return
+  selected.value.content = await file.text()
+  selected.value.source = file.name.toLowerCase().replace(/[^a-z0-9.-]+/g, '-')
 }
 
 onMounted(load)

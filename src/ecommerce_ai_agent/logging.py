@@ -26,6 +26,11 @@ CONTEXT_FIELDS = (
     "estimated_cost_cny",
     "error_count",
     "error_types",
+    "safety_action",
+    "safety_layer",
+    "safety_categories",
+    "pii_count",
+    "content_hash",
 )
 
 

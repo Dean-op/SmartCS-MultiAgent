@@ -23,6 +23,7 @@ from ecommerce_ai_agent.observability import (
     RequestObservabilityMiddleware,
     configure_tracing,
 )
+from ecommerce_ai_agent.safety import SafetyService
 from ecommerce_ai_agent.services.chat import ChatService
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,11 @@ def create_app(
         async with AsyncPostgresSaver.from_conn_string(checkpoint_dsn) as checkpointer:
             await checkpointer.setup()
             knowledge = KnowledgeBase(settings, model)
+            safety = SafetyService(
+                model,
+                semantic_review_threshold=settings.safety_semantic_review_threshold,
+                semantic_block_threshold=settings.safety_semantic_block_threshold,
+            )
             service = ChatService(
                 model,
                 BusinessTools(database.session_factory, settings),
@@ -67,6 +73,7 @@ def create_app(
             application.state.chat_service = service
             application.state.database = database
             application.state.knowledge_base = knowledge
+            application.state.safety_service = safety
             try:
                 yield
             finally:
@@ -79,9 +86,7 @@ def create_app(
         "Application configured",
         extra={"environment": settings.app_env},
     )
-    description = (
-        "M16 Vue, SSE and knowledge management API for the e-commerce Multi-Agent project."
-    )
+    description = "M17 safety, PII and PDF API for the e-commerce Multi-Agent project."
     application = FastAPI(
         title=settings.app_name,
         version="0.1.0",
@@ -101,6 +106,7 @@ def create_app(
     application.state.chat_service = chat_service
     application.state.database = None
     application.state.knowledge_base = None
+    application.state.safety_service = None
     application.state.knowledge_rebuild_lock = asyncio.Lock()
     application.state.settings = settings
     register_exception_handlers(application)

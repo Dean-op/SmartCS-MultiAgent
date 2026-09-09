@@ -75,7 +75,10 @@ def run_smoke_test(base_url: str, wait_seconds: float) -> None:
             if unauthenticated_payload.get("error", {}).get("code") != "http_error":
                 raise RuntimeError(f"unexpected authentication error: {unauthenticated_payload}")
 
-            print("M16 base smoke passed: dependencies, Vue, Swagger, and Chat auth are ready.")
+            print(
+                "M17 base smoke passed: Vue, API, safety dependencies, "
+                "and infrastructure are ready."
+            )
             return
         except (OSError, ValueError, RuntimeError, urllib.error.HTTPError) as exc:
             last_error = f"{type(exc).__name__}: {exc}"

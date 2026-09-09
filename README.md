@@ -1,6 +1,6 @@
 # ecommerce-ai-agent
 
-一个从第一性原理逐步构建的电商 Multi-Agent 智能客服学习项目。当前已完成 M0～M16：真实模型、业务 Tool、LangGraph 编排、混合 RAG、多轮持久化、退款 Human-in-the-loop、JWT、Agent Evaluation、Observability 和 Vue 图形界面均已形成可运行闭环。
+一个从第一性原理逐步构建的电商 Multi-Agent 智能客服学习项目。当前已完成 M0～M17：真实模型、业务 Tool、LangGraph 编排、混合 RAG、多轮持久化、退款 Human-in-the-loop、JWT、Agent Evaluation、Observability、Vue 图形界面和内容安全均已形成可运行闭环。
 
 ## 系统能力
 
@@ -18,6 +18,9 @@
 - Vue 3 + TypeScript 用户端、知识库管理端和退款审核页
 - SSE 实时输出 Router/Agent/Tool 状态、模型推理过程和最终 Markdown 回答
 - PostgreSQL 会话列表、历史消息、推理内容与知识文档管理
+- 规则、正则、Embedding、Structured Judge 四层内容安全审核
+- 手机号、身份证、信用卡和 Email PII 检测与脱敏
+- PDF/Markdown 知识上传、文本提取与同步重建
 
 项目刻意不包含 Kubernetes、微服务、OAuth、Refresh Token、复杂 RBAC、消息队列、长期记忆、生产监控平台或支付网关。
 
@@ -226,7 +229,11 @@ npm run typecheck
 npm run build
 ```
 
-用户端支持 SSE 流式回答、可折叠推理过程、会话列表和历史消息；admin 额外拥有知识文档 Markdown 编辑、索引重建、Retrieval Playground 与退款审核页面。JWT 只存放在当前标签页的 `sessionStorage`。
+用户端支持 SSE 流式回答、可折叠推理过程、会话列表和历史消息；admin 额外拥有知识文档 Markdown/PDF 导入、索引重建、Retrieval Playground 与退款审核页面。JWT 只存放在当前标签页的 `sessionStorage`。
+
+Chat 输入、模型 reasoning 和最终回答都会经过 PII 与内容安全审核。为避免“先泄漏后拦截”，Router/Agent/Tool 状态仍实时输出，但 reasoning/answer 会先在服务端完成审核，再通过 SSE 分块发送。
+
+PDF 使用 `pypdf` 提取文本并转换为按页 Markdown；默认限制10MB、100页和10万字符。加密、损坏、超限或无可提取文本的扫描 PDF 会被拒绝，本阶段不包含 OCR。
 
 ## API
 
@@ -243,6 +250,7 @@ GET  /api/v1/conversations
 GET  /api/v1/conversations/{conversation_id}/messages
 GET  /api/v1/knowledge/documents
 POST /api/v1/knowledge/documents
+POST /api/v1/knowledge/documents/pdf
 POST /api/v1/knowledge/rebuild
 POST /api/v1/knowledge/search
 GET  /api/v1/reviews/pending
@@ -329,6 +337,7 @@ uv run python scripts/tool_calling_smoke_test.py
 uv run python scripts/conversation_smoke_test.py
 uv run python scripts/rag_smoke_test.py
 uv run python scripts/refund_smoke_test.py
+uv run python scripts/safety_smoke_test.py
 ```
 
 评估：
@@ -354,3 +363,5 @@ uv run python scripts/evaluate_agents.py
 - RAG 数据集很小，当前评估满分不代表真实大规模知识库表现。
 - Agent Evaluation 只有 20 条单次样本，不代表模型长期稳定性。
 - Console Trace 与成本估算只适合本地学习，不是生产监控或财务账单。
+- PII 仅覆盖手机号、身份证、Luhn 卡号和 Email，不应宣称完整 GDPR 合规。
+- PDF 仅支持文本层提取，扫描件需要未来接入 OCR。

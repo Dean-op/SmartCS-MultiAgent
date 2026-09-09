@@ -66,3 +66,8 @@ class Settings(BaseSettings):
     hybrid_candidate_k: int = Field(default=10, ge=2, le=50)
     rrf_k: float = Field(default=60, gt=0, le=16384)
     rerank_min_score: float = Field(default=0.2, ge=0, le=1)
+    safety_semantic_review_threshold: float = Field(default=0.68, ge=0, le=1)
+    safety_semantic_block_threshold: float = Field(default=0.86, ge=0, le=1)
+    pdf_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    pdf_max_pages: int = Field(default=100, ge=1, le=500)
+    pdf_max_characters: int = Field(default=100_000, ge=1000, le=1_000_000)

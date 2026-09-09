@@ -3,12 +3,13 @@ from time import perf_counter
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile, status
 from sqlalchemy.exc import IntegrityError
 
 from ecommerce_ai_agent.api.dependencies import require_admin
 from ecommerce_ai_agent.api.errors import ApplicationError
 from ecommerce_ai_agent.knowledge import KnowledgeBase, chunk_markdown_text
+from ecommerce_ai_agent.pdf_ingestion import PdfIngestionError, extract_pdf_markdown
 from ecommerce_ai_agent.schemas.knowledge import (
     KnowledgeDocumentDetail,
     KnowledgeDocumentSummary,
@@ -39,6 +40,20 @@ def _detail(document) -> KnowledgeDocumentDetail:
     return KnowledgeDocumentDetail.model_validate(document, from_attributes=True)
 
 
+async def _safe_content(request: Request, content: str) -> str:
+    safety = getattr(request.app.state, "safety_service", None)
+    if safety is None:
+        return content
+    result = await safety.review(content)
+    if result.action == "block":
+        raise ApplicationError(
+            code="unsafe_knowledge_content",
+            message="Knowledge content was blocked by safety policy",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return result.text
+
+
 @router.get("/documents", response_model=list[KnowledgeDocumentSummary])
 async def list_documents(
     request: Request,
@@ -61,10 +76,63 @@ async def create_document(
     request: Request,
     _admin: Annotated[UserData, Depends(require_admin)],
 ) -> KnowledgeDocumentDetail:
+    safe_content = await _safe_content(request, payload.content)
     try:
         async with request.app.state.database.session_factory.begin() as session:
             document = await KnowledgeDocumentService(session).create(
-                payload.title, payload.source, payload.content
+                payload.title, payload.source, safe_content
+            )
+    except IntegrityError as exc:
+        raise ApplicationError(
+            code="knowledge_source_exists",
+            message="Knowledge source already exists",
+            status_code=status.HTTP_409_CONFLICT,
+        ) from exc
+    return _detail(document)
+
+
+@router.post(
+    "/documents/pdf",
+    response_model=KnowledgeDocumentDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_pdf(
+    request: Request,
+    _admin: Annotated[UserData, Depends(require_admin)],
+    file: Annotated[UploadFile, File()],
+) -> KnowledgeDocumentDetail:
+    filename = file.filename or "document.pdf"
+    if not filename.lower().endswith(".pdf") or file.content_type not in {
+        "application/pdf",
+        "application/octet-stream",
+    }:
+        raise ApplicationError(
+            code="pdf_invalid",
+            message="Only PDF files are supported",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    settings = request.app.state.settings
+    content = await file.read(settings.pdf_max_bytes + 1)
+    try:
+        extracted = await asyncio.to_thread(
+            extract_pdf_markdown,
+            content,
+            filename,
+            max_bytes=settings.pdf_max_bytes,
+            max_pages=settings.pdf_max_pages,
+            max_characters=settings.pdf_max_characters,
+        )
+    except PdfIngestionError as exc:
+        raise ApplicationError(
+            code=exc.code,
+            message="PDF could not be safely extracted",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        ) from exc
+    safe_content = await _safe_content(request, extracted.content)
+    try:
+        async with request.app.state.database.session_factory.begin() as session:
+            document = await KnowledgeDocumentService(session).create(
+                extracted.title, extracted.source, safe_content
             )
     except IntegrityError as exc:
         raise ApplicationError(
@@ -99,10 +167,11 @@ async def update_document(
     request: Request,
     _admin: Annotated[UserData, Depends(require_admin)],
 ) -> KnowledgeDocumentDetail:
+    safe_content = await _safe_content(request, payload.content)
     try:
         async with request.app.state.database.session_factory.begin() as session:
             document = await KnowledgeDocumentService(session).update(
-                document_id, payload.title, payload.source, payload.content
+                document_id, payload.title, payload.source, safe_content
             )
     except IntegrityError as exc:
         raise ApplicationError(

@@ -16,7 +16,7 @@ const toolbars: ToolbarNames[] = [
     <div class="document-fields">
       <label>文档标题<input v-model="document.title" maxlength="200" /></label>
       <label>Source<input v-model="document.source" maxlength="128" placeholder="refund-policy.md" /></label>
-      <label class="file-button">导入 .md<input type="file" accept=".md,text/markdown" @change="emit('import', $event)" /></label>
+      <label class="file-button">导入 .md / .pdf<input type="file" accept=".md,.pdf,text/markdown,application/pdf" @change="emit('import', $event)" /></label>
     </div>
     <MdEditor v-model="document.content" language="zh-CN" preview-theme="github" :toolbars="toolbars" :no-upload-img="true" />
     <div class="editor-actions">

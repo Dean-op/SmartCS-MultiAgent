@@ -53,9 +53,13 @@ async def conversation_messages(
             message="Conversation not found",
             status_code=status.HTTP_404_NOT_FOUND,
         )
-    return ConversationHistoryResponse(
-        items=[
-            ConversationMessageResponse.model_validate(item, from_attributes=True)
-            for item in messages
-        ]
-    )
+    items = [
+        ConversationMessageResponse.model_validate(item, from_attributes=True) for item in messages
+    ]
+    safety = getattr(request.app.state, "safety_service", None)
+    if safety is not None:
+        for item in items:
+            item.content = safety.redact_pii(item.content).text
+            if item.reasoning_content:
+                item.reasoning_content = safety.redact_pii(item.reasoning_content).text
+    return ConversationHistoryResponse(items=items)
